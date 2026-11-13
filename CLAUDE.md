@@ -1,5 +1,15 @@
 # CLAUDE.md — handoff notes
 
+## This fork: Extras (read first)
+
+This is a personal fork for one Xteink X4 Pro. It adds eight game features called "Extras".
+Before changing anything, read [docs/extras/PLAN.md](docs/extras/PLAN.md) and
+[docs/extras/SAVE-SAFETY.md](docs/extras/SAVE-SAFETY.md). The safety rules there are hard limits:
+no changes to existing save or stats formats, reading stats are read-only, all extras code sits
+behind `CROSSINK_POKEMON_EXTRAS`, and all extras state lives in `/.crosspoint/pokemon-extras-{a,b}.bin`.
+Work happens on `extras`; `main` mirrors upstream. Everything below this section is upstream's own
+handoff notes.
+
 Notes for Claude in a later session (or on another machine). Not project documentation: what shipped is in
 [CHANGELOG.md](CHANGELOG.md), how things work is under [docs/](docs/). This file keeps what a new session
 needs and would otherwise rediscover the hard way. The long session-by-session narrative it used to hold
