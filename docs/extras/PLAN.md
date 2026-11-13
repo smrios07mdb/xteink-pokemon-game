@@ -94,7 +94,8 @@ otherwise patches go through Sergio.
 
 - `main`: mirror of upstream. Never commit here. Update with `git fetch upstream && git merge --ff-only upstream/main`.
 - `extras`: integration branch and the fork's default branch.
-- `extras/<milestone>-<topic>`: one branch and one PR per milestone (or per feature if large).
+- `feat/extras-<milestone>-<topic>`: one branch and one PR per milestone (or per feature if large).
+  (Not `extras/...`: git cannot have a branch `extras` and a branch `extras/x` at the same time.)
 - Test firmware: **Actions > Release > Run workflow** on the branch gives a downloadable
   `firmware-x4-pro.bin` artifact with no release created.
 - Tagged builds: `v2.1.0-extras.N-x4pro`. The `-x4pro` suffix makes the workflow build the X4 Pro
@@ -107,7 +108,8 @@ Each milestone ends with: native tests green (minus the three upstream-known fai
 recorded, and a row added to [PROGRESS.md](PROGRESS.md). Sergio play-tests on the device for at
 least two days before the next milestone starts.
 
-### M0: fork and safety net (Claude Code)
+### M0: fork and safety net
+Status 2026-11-13: steps 1, 3, 4 and 6 are done (see PROGRESS.md). Steps 2, 5 and 7 need the Mac.
 1. `gh repo fork thebitsworld/xteink-pokemon-game --clone`; add `upstream` remote; create `extras`
    from `main`; apply the plan patch; set `extras` as default branch.
 2. Enable Actions on the fork. Run the Release workflow manually on `extras`; confirm the X4 Pro
@@ -115,7 +117,8 @@ least two days before the next milestone starts.
 3. Point the updater at the fork: in `[env:pokemon-x4-pro]` change `CROSSINK_OTA_RELEASE_URL` to
    `https://api.github.com/repos/<fork-owner>/xteink-pokemon-game/releases/latest`. Otherwise
    **Check for Updates** would install upstream firmware over this build.
-4. Baseline: `cmake -S test -B /tmp/crossink-tests -G 'Unix Makefiles' && cmake --build /tmp/crossink-tests -j 6 && ctest --test-dir /tmp/crossink-tests`; record which tests fail before any change.
+4. Baseline: first `python3 scripts/gen_i18n.py lib/I18n/translations lib/I18n/` (the tests need the
+   generated i18n headers), then `cmake -S test -B /tmp/crossink-tests -G 'Unix Makefiles' && cmake --build /tmp/crossink-tests -j 6 && ctest --test-dir /tmp/crossink-tests`; record which tests fail before any change.
 5. Baseline simulator: `pio run -e pokemon-x4-pro-simulator -t run_simulator`.
 6. Add `scripts/extras/backup_sd_save.sh` and `restore_sd_save.sh` (SAVE-SAFETY, "Backup").
 7. Copy Sergio's real save into the simulator's `fs_/.crosspoint/` and confirm it loads. This copy is
