@@ -3,24 +3,29 @@
 Paste these into Claude Code on the Mac, one milestone per session. Each assumes the working
 directory is the fork's clone (except M0, which creates it).
 
-## M0 (run from the folder where the clone should live)
+## M0, remaining steps (run from the folder where the clone should live)
+
+The fork, the `extras` branch, the updater change, the backup scripts and the native test baseline
+already exist. What is left needs the Mac.
 
 ```
-Set up my personal fork of thebitsworld/xteink-pokemon-game for an Xteink X4 Pro.
+Finish M0 for my fork smrios07mdb/xteink-pokemon-game (Xteink X4 Pro).
 
-1. Run: gh repo fork thebitsworld/xteink-pokemon-game --clone, then cd into it.
-   Confirm the upstream remote exists. Create branch `extras` from main.
-2. Apply the plan patch I downloaded: git am ~/Downloads/0001-extras-plan.patch
-   Push `extras` and make it the fork's default branch (gh repo edit --default-branch extras).
-3. Read docs/extras/PLAN.md and docs/extras/SAVE-SAFETY.md in full, then do PLAN.md "M0" steps 2-7.
-   For step 3 use my GitHub login as <fork-owner> (gh api user -q .login).
-4. For step 7, ask me to insert the SD card. Run the backup script first, then copy the backup's
-   .crosspoint folder into fs_/ for the simulator. Never commit fs_ or the backup.
-5. Fill in the Baseline and M0 rows of docs/extras/PROGRESS.md, commit on a branch
-   `extras/m0-setup`, open a PR into `extras`, and stop. Tell me what failed, if anything.
+1. Clone it if it is not here: gh repo clone smrios07mdb/xteink-pokemon-game, cd in, check out
+   `extras` (after the M0 PR is merged) and add the upstream remote if missing
+   (git remote add upstream https://github.com/thebitsworld/xteink-pokemon-game).
+2. Read docs/extras/PLAN.md, docs/extras/SAVE-SAFETY.md and the "Machine setup" notes in CLAUDE.md.
+3. Install PlatformIO if needed, then build and run the simulator baseline:
+   pio run -e pokemon-x4-pro-simulator -t run_simulator
+4. Build the firmware: pio run -e pokemon-x4-pro. Record its size in docs/extras/PROGRESS.md.
+5. Ask me to insert the reader's SD card. Run scripts/extras/backup_sd_save.sh /Volumes/<SD>, then
+   copy the backup's .crosspoint folder into fs_/ and confirm my real save loads in the simulator.
+   Never commit fs_ or the backup. Never write to the SD card.
+6. Fill in the remaining Baseline and M0 cells in docs/extras/PROGRESS.md on a branch
+   feat/extras-m0-finish, open a PR into `extras`, and stop. Tell me what failed, if anything.
 
-Rules: build nothing from docs/extras/deferred/. Commit nothing to main. Do not change any existing save or stats format. Do not flash
-the device. Ask before anything destructive.
+Rules: build nothing from docs/extras/deferred/. Commit nothing to main. Do not change any existing
+save or stats format. Do not flash the device. Ask before anything destructive.
 ```
 
 ## M1 to M5 (same prompt, change the milestone)
@@ -33,7 +38,7 @@ Milestone M<N> of docs/extras/PLAN.md.
    these features (from Claude chat), use them; do not rewrite them.
 2. Before coding, list every file you will touch and every hook you will add, and check each
    against SAVE-SAFETY rules R1-R11. Show me the list and wait for my OK.
-3. Implement on branch extras/m<N>-<topic>, everything behind CROSSINK_POKEMON_EXTRAS.
+3. Implement on branch feat/extras-m<N>-<topic>, everything behind CROSSINK_POKEMON_EXTRAS.
 4. Verify in this order: native tests (including test/pokemon_extras and
    test/pokemon_extras_compat), simulator with a throwaway save, simulator with the copy of my real
    save. Take a screenshot of each new screen (CROSSPOINT_SIM_SCREENSHOTS, see CLAUDE.md).
