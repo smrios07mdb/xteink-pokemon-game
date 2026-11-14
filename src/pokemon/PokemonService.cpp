@@ -263,6 +263,9 @@ ServiceStatus PokemonService::withdrawPokemon(const uint32_t recordId) {
     LOG_ERR("PokemonService", "Failed to withdraw Pokemon");
     return ServiceStatus::StorageError;
   }
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  clearDayCareIfHolds(recordId);  // main save first, then extras (SAVE-SAFETY R6)
+#endif
   return ServiceStatus::Ok;
 }
 
@@ -286,6 +289,9 @@ ServiceStatus PokemonService::releasePokemon(const uint32_t recordId) {
   battleStore_.removeEntry(recordId);
   movesetStore_.removeEntry(recordId);
   ivEvStore_.removeEntry(recordId);
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  clearDayCareIfHolds(recordId);
+#endif
   return ServiceStatus::Ok;
 }
 
@@ -1681,6 +1687,9 @@ bool PokemonService::creditMinutes(const uint16_t minutes, const uint8_t bookPro
     }
   }
   healPartyOnRead(state, minutes, previousMinuteRemainder);
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  applyExtrasAfterCredit(minutes, bookProgressPercent);
+#endif
   return true;
 }
 

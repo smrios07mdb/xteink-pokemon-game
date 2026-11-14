@@ -24,6 +24,7 @@ add_executable(PokemonExtrasCompatTest
   ${REPO_ROOT}/lib/Pokemon/PokemonCrc32.cpp
   ${REPO_ROOT}/lib/Pokemon/PokemonExtras.cpp
   ${REPO_ROOT}/lib/Pokemon/PokemonExtrasCodec.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonExtrasRules.cpp
   ${REPO_ROOT}/src/pokemon/PokemonStore.cpp
   ${REPO_ROOT}/src/pokemon/PokemonBattleStore.cpp
   ${REPO_ROOT}/src/pokemon/PokemonIvEvStore.cpp
@@ -31,6 +32,8 @@ add_executable(PokemonExtrasCompatTest
   ${REPO_ROOT}/src/pokemon/PokemonHallOfFameStore.cpp
   ${REPO_ROOT}/src/pokemon/PokemonService.cpp
   ${REPO_ROOT}/src/pokemon/PokemonExtrasStore.cpp
+  ${REPO_ROOT}/src/pokemon/PokemonExtrasHooks.cpp
+  ${REPO_ROOT}/src/pokemon/PokemonServiceExtras.cpp
 )
 add_dependencies(PokemonExtrasCompatTest PokemonServiceTest)
 

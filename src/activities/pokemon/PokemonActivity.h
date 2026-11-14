@@ -275,6 +275,15 @@ class PokemonActivity final : public Activity {
   int listTop() const;
   int rowHeightForScreen() const;
   bool canEvolveFocused() const;
+  // Screen::Actions' buttons for the focused Pokemon: collectionActions(),
+  // plus the Day Care action in an Extras build.
+  pokemon::CollectionActionSet focusedActions() const;
+  const char* actionLabel(pokemon::CollectionAction action) const;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  // Re-reads the Menu's Day Care line or the Trainer Card's streak line when
+  // that screen opens, so drawing them costs no SD read per frame.
+  void refreshExtrasLine(Screen screen);
+#endif
   bool showsPartyHealthRows() const;
   bool showsMachineCapabilityRows() const;
   int rowsPerPage() const;
@@ -318,6 +327,10 @@ class PokemonActivity final : public Activity {
   // The "items received" list drawn instead of message_ while showingReceived_.
   std::array<uint8_t, pokemon::POKEMON_ITEM_ID_MAX> receivedSummary_{};
   bool showingReceived_ = false;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  char dayCareLine_[72]{};  // "Day Care: Eevee Lv 14"; empty = slot empty
+  char streakLine_[72]{};   // "Streak: 6 days (+30% XP)"; empty = hidden (no clock, or Streaks off)
+#endif
   char message_[192]{};  // long enough for a 32-byte nickname inside a translated (up to ~2 bytes per letter) sentence
   pokemon::BattleCombatant battlePlayer_{};
   pokemon::BattleCombatant battleOpponent_{};

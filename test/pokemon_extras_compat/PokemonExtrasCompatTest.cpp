@@ -18,6 +18,8 @@
 
 #include <HalStorage.h>
 
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -27,8 +29,10 @@
 #include <vector>
 
 #include "PokemonExtras.h"
+#include "PokemonExtrasRules.h"
 #include "PokemonStoreCodec.h"
 #include "pokemon/PokemonBattleStore.h"
+#include "pokemon/PokemonExtrasHooks.h"
 #include "pokemon/PokemonExtrasStore.h"
 #include "pokemon/PokemonHallOfFameStore.h"
 #include "pokemon/PokemonIvEvStore.h"
@@ -170,8 +174,203 @@ bool loadSaveDirectory(const char* directory) {
   return foundMain;
 }
 
-// Every extras operation M1 has, with the main save checked after each group.
-void runExtrasOperations() {
+// What the streak rules see in place of the firmware's reading statistics.
+pokemon::extras::StreakInput testStreak{};
+pokemon::extras::StreakInput testStreakSource() { return testStreak; }
+
+size_t countEncounters(const pokemon::PokemonState& state) {
+  size_t count = 0;
+  for (const pokemon::PendingEvent& event : state.pendingEvents) {
+    count += event.kind == pokemon::PendingEventKind::Encounter ? 1 : 0;
+  }
+  return count;
+}
+
+// M2 (docs/extras/M2-HOOKS.md): the streak bonus, the streak milestone
+// encounter and Day Care XP, all through PokemonService::creditMinutes(), plus
+// the Day Care slot being cleared on withdraw and release. `fixture` is false
+// for a real save, where the party, the queue and the levels are whatever the
+// player has: the checks then adapt, and nothing is released.
+void runM2Operations(const bool fixture) {
+  using pokemon::ServiceStatus;
+  using pokemon::extras::DayCareSendResult;
+  using pokemon::extras::Feature;
+
+  pokemon::PokemonExtrasStore& extrasStore = pokemon::devicePokemonExtrasStore();
+  extrasStore.load();  // the M1 block wrote the files through its own store object
+  CHECK(extrasStore.setFeatureEnabled(Feature::Streaks, true));
+  CHECK(extrasStore.setFeatureEnabled(Feature::DayCare, true));
+  pokemon::setExtrasStreakInputSource(testStreakSource);
+
+  pokemon::PokemonStore store;
+  pokemon::PokemonBattleStore battleStore;
+  pokemon::PokemonIvEvStore ivEvStore;
+  pokemon::PokemonHallOfFameStore hallOfFameStore;
+  pokemon::PokemonService service(store, battleStore, ivEvStore, hallOfFameStore, {nullptr, zeroRandom});
+  pokemon::PokemonSnapshot snapshot{};
+  CHECK(service.loadSnapshot(snapshot) == ServiceStatus::Ok);
+  if (snapshot.partyCount == 0) return;
+  const uint32_t leaderId = snapshot.party[0].recordId;
+  const auto recordOf = [&](const uint32_t recordId) {
+    pokemon::PokemonRecord record{};
+    CHECK(service.readRecord(recordId, record) == ServiceStatus::Ok);
+    return record;
+  };
+  const auto stateNow = [&] {
+    pokemon::PokemonSnapshot current{};
+    CHECK(service.loadSnapshot(current) == ServiceStatus::Ok);
+    return current.state;
+  };
+
+  // --- Streak bonus: a 6-day streak is +30%, so 10 minutes grant 10 + 3 XP.
+  {
+    testStreak = {true, 6, 20000};
+    const uint32_t xpBefore = recordOf(leaderId).totalXp;
+    CHECK(service.creditMinutes(10, 40));
+    if (xpBefore + 13U <= pokemon::MAXIMUM_TOTAL_XP) CHECK(recordOf(leaderId).totalXp == xpBefore + 13U);
+    std::printf("  streak bonus: 10 minutes at a 6-day streak gave the lead %lu XP\n",
+                static_cast<unsigned long>(recordOf(leaderId).totalXp - xpBefore));
+    CHECK(extrasStore.state().streakXpRemainderPermille == 0);
+    // 1 minute at +30% is 0.3 XP: nothing granted yet, the fraction is kept.
+    const uint32_t xpMid = recordOf(leaderId).totalXp;
+    CHECK(service.creditMinutes(1, 40));
+    if (xpMid + 1U <= pokemon::MAXIMUM_TOTAL_XP) CHECK(recordOf(leaderId).totalXp == xpMid + 1U);
+    CHECK(extrasStore.state().streakXpRemainderPermille == 300);
+    checkMainSave();
+  }
+
+  // --- No clock: no bonus, and the remainder is left alone.
+  {
+    testStreak = {};
+    const uint32_t xpBefore = recordOf(leaderId).totalXp;
+    CHECK(service.creditMinutes(1, 40));
+    if (xpBefore + 1U <= pokemon::MAXIMUM_TOTAL_XP) CHECK(recordOf(leaderId).totalXp == xpBefore + 1U);
+    CHECK(extrasStore.state().streakXpRemainderPermille == 300);
+    CHECK(extrasStore.state().lastRewardedStreakMilestone == 0);
+  }
+
+  // --- Milestone: day 7 queues one ordinary wild Encounter, once.
+  {
+    testStreak = {true, 7, 20001};
+    const pokemon::PokemonState before = stateNow();
+    const bool room = pokemon::extras::hasEncounterRoom(before);
+    CHECK(service.creditMinutes(1, 40));
+    const pokemon::PokemonState after = stateNow();
+    std::printf("  streak milestone: room in the queue %s, encounters queued %lu -> %lu, rewarded milestone %u\n",
+                room ? "yes" : "no", static_cast<unsigned long>(countEncounters(before)),
+                static_cast<unsigned long>(countEncounters(after)),
+                static_cast<unsigned>(extrasStore.state().lastRewardedStreakMilestone));
+    if (room) {
+      CHECK(extrasStore.state().lastRewardedStreakMilestone == 7);
+      CHECK(countEncounters(after) >= countEncounters(before) + 1);
+      if (fixture) CHECK(pokemon::pendingEventCount(after) == pokemon::pendingEventCount(before) + 1);
+    } else {
+      CHECK(extrasStore.state().lastRewardedStreakMilestone == 0);  // retried at the next checkpoint
+    }
+    checkMainSave();
+    // The same streak day again: no second encounter.
+    const size_t pendingMid = pokemon::pendingEventCount(after);
+    CHECK(service.creditMinutes(1, 40));
+    if (room) {
+      CHECK(pokemon::extras::dueStreakMilestone(extrasStore.state(), testStreak) == 0);
+      if (fixture) CHECK(pokemon::pendingEventCount(stateNow()) == pendingMid);
+    }
+    checkMainSave();
+  }
+  testStreak = {};  // the Day Care checks below count XP without a bonus
+
+  // --- Day Care. Needs a boxed Pokemon: the last party member is deposited,
+  // or the first boxed one is used when the party has a single member.
+  CHECK(service.loadSnapshot(snapshot) == ServiceStatus::Ok);
+  uint32_t boxedId = 0;
+  bool deposited = false;
+  if (snapshot.partyCount > 1) {
+    const uint32_t candidate = snapshot.party[snapshot.partyCount - 1U].recordId;
+    if (service.depositPokemon(candidate) == ServiceStatus::Ok) {
+      boxedId = candidate;
+      deposited = true;
+    }
+  }
+  if (boxedId == 0) {
+    std::array<pokemon::PokemonRecord, 1> page{};
+    size_t count = 0;
+    if (service.readPcPage(pokemon::PcOrder::CatchDate, 0, page, count) == ServiceStatus::Ok && count > 0) {
+      boxedId = page[0].recordId;
+    }
+  }
+  if (boxedId == 0) {
+    std::printf("PokemonExtrasCompatTest: no boxed Pokemon available, Day Care checks skipped\n");
+  } else {
+    DayCareSendResult result = DayCareSendResult::InvalidRecord;
+    CHECK(service.sendToDayCare(leaderId, result) == ServiceStatus::Ok);
+    CHECK(result == DayCareSendResult::InParty);
+    CHECK(extrasStore.state().dayCareRecordId == 0);
+    CHECK(service.sendToDayCare(boxedId, result) == ServiceStatus::Ok);
+    CHECK(result == DayCareSendResult::Sent);
+    CHECK(extrasStore.state().dayCareRecordId == boxedId);
+    pokemon::PokemonRecord resident{};
+    CHECK(service.readDayCareRecord(resident));
+    CHECK(resident.recordId == boxedId);
+
+    // 11 minutes: 5 XP for the Day Care Pokemon (never past the lead's level)
+    // and the odd minute kept.
+    const uint32_t residentXp = resident.totalXp;
+    CHECK(service.creditMinutes(11, 40));
+    const uint32_t cap = pokemon::extras::dayCareXpCap(pokemon::levelForXp(recordOf(leaderId).totalXp));
+    const uint32_t expected = residentXp >= cap ? 0U : std::min<uint32_t>(5U, cap - residentXp);
+    CHECK(recordOf(boxedId).totalXp == residentXp + expected);
+    std::printf("  Day Care: 11 minutes gave record %lu %lu XP (cap %lu, had %lu)\n",
+                static_cast<unsigned long>(boxedId), static_cast<unsigned long>(recordOf(boxedId).totalXp - residentXp),
+                static_cast<unsigned long>(cap), static_cast<unsigned long>(residentXp));
+    CHECK(recordOf(boxedId).totalXp <= std::max(cap, residentXp));
+    CHECK(extrasStore.state().dayCareMinuteRemainder == 1);
+    checkMainSave();
+
+    // Feature off: the Pokemon stays, and earns nothing.
+    CHECK(extrasStore.setFeatureEnabled(Feature::DayCare, false));
+    const uint32_t pausedXp = recordOf(boxedId).totalXp;
+    CHECK(service.creditMinutes(4, 40));
+    CHECK(recordOf(boxedId).totalXp == pausedXp);
+    CHECK(extrasStore.state().dayCareRecordId == boxedId);
+    CHECK(extrasStore.setFeatureEnabled(Feature::DayCare, true));
+
+    // Back to the Party (or taken back): the slot is cleared.
+    if (deposited) {
+      CHECK(service.withdrawPokemon(boxedId) == ServiceStatus::Ok);
+    } else {
+      CHECK(service.takeFromDayCare() == ServiceStatus::Ok);
+    }
+    CHECK(extrasStore.state().dayCareRecordId == 0);
+    CHECK(extrasStore.state().dayCareMinuteRemainder == 0);
+    CHECK(service.takeFromDayCare() == ServiceStatus::NotApplicable);
+    checkMainSave();
+
+    if (fixture && deposited) {
+      // Released while in Day Care: cleared too.
+      CHECK(service.depositPokemon(boxedId) == ServiceStatus::Ok);
+      CHECK(service.sendToDayCare(boxedId, result) == ServiceStatus::Ok);
+      CHECK(result == DayCareSendResult::Sent);
+      CHECK(service.releasePokemon(boxedId) == ServiceStatus::Ok);
+      CHECK(extrasStore.state().dayCareRecordId == 0);
+      // A slot left holding a record that no longer exists is cleared
+      // silently by the next reading credit.
+      pokemon::extras::ExtrasState stale = extrasStore.state();
+      stale.dayCareRecordId = boxedId;
+      CHECK(extrasStore.commit(stale));
+      CHECK(service.creditMinutes(2, 40));
+      CHECK(extrasStore.state().dayCareRecordId == 0);
+      checkMainSave();
+    }
+  }
+
+  pokemon::setExtrasStreakInputSource(nullptr);
+  // What was saved reads back the same from disk.
+  pokemon::PokemonExtrasStore reader(fixedEntropy);
+  CHECK(reader.state() == extrasStore.state());
+}
+
+// Every extras operation there is so far, with the main save checked after each group.
+void runExtrasOperations(const bool fixture) {
   checkMainSave();
   const auto before = snapshotUpstreamFiles();
 
@@ -210,6 +409,8 @@ void runExtrasOperations() {
   }
   checkMainSave();
 
+  runM2Operations(fixture);
+
   // Deleting the extras files changes nothing else.
   const auto withExtras = snapshotUpstreamFiles();
   for (const char* path : EXTRAS_PATHS) {
@@ -217,6 +418,7 @@ void runExtrasOperations() {
   }
   CHECK(snapshotUpstreamFiles() == withExtras);
   checkMainSave();
+  pokemon::devicePokemonExtrasStore().load();  // the files it had loaded are gone
 
   // Game reset: main save first, then the extras store (R6). The fresh main
   // save is still upstream's v11, and extras progress is cleared.
@@ -251,7 +453,8 @@ int main() {
   Storage.clear();
   const char* saveDirectory = std::getenv("CROSSINK_EXTRAS_COMPAT_SAVE_DIR");
   const char* checkOnly = std::getenv("CROSSINK_EXTRAS_COMPAT_CHECK_ONLY");
-  if (saveDirectory != nullptr && *saveDirectory != '\0') {
+  const bool fixture = saveDirectory == nullptr || *saveDirectory == '\0';
+  if (!fixture) {
     CHECK(loadSaveDirectory(saveDirectory));
     std::printf("PokemonExtrasCompatTest: using the save in %s\n", saveDirectory);
   } else {
@@ -260,7 +463,7 @@ int main() {
   if (checkOnly != nullptr && std::string(checkOnly) == "1") {
     checkMainSave();
   } else {
-    runExtrasOperations();
+    runExtrasOperations(fixture);
   }
   if (failures == 0) std::printf("PokemonExtrasCompatTest: all checks passed\n");
   return failures == 0 ? 0 : 1;

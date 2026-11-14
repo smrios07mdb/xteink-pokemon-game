@@ -355,6 +355,37 @@ StoreBeginResult PokemonStore::begin() {
   return StoreBeginResult::Corrupt;
 }
 
+#if defined(CROSSINK_POKEMON_EXTRAS)
+StoreBeginResult PokemonStore::beginReadOnly() {
+  ready_ = false;
+  writable_ = false;
+  activeHeader_ = {};
+  activeIsA_ = false;
+  highestRecordId_ = 0;
+
+  SnapshotHeader headerA{};
+  SnapshotHeader headerB{};
+  uint32_t highestA = 0;
+  uint32_t highestB = 0;
+  const InspectionResult resultA = inspectSnapshot(STORE_PATH_A, headerA, highestA);
+  const InspectionResult resultB = inspectSnapshot(STORE_PATH_B, headerB, highestB);
+  if (resultA == InspectionResult::Unsupported || resultB == InspectionResult::Unsupported) {
+    return StoreBeginResult::Unsupported;
+  }
+  if (resultA == InspectionResult::Ready || resultB == InspectionResult::Ready) {
+    activeIsA_ = resultA == InspectionResult::Ready &&
+                 (resultB != InspectionResult::Ready || !sequenceIsNewer(headerB.sequence, headerA.sequence));
+    activeHeader_ = activeIsA_ ? headerA : headerB;
+    highestRecordId_ = activeIsA_ ? highestA : highestB;
+    ready_ = true;  // writable_ stays false
+    return StoreBeginResult::Ready;
+  }
+  // A legacy-named save is left for begin() to migrate: here it reads as empty.
+  if (resultA == InspectionResult::Missing && resultB == InspectionResult::Missing) return StoreBeginResult::Empty;
+  return StoreBeginResult::Corrupt;
+}
+#endif
+
 bool PokemonStore::loadState(PokemonState& output) const {
   if (!ready_) return false;
   const char* path = activeIsA_ ? STORE_PATH_A : STORE_PATH_B;
