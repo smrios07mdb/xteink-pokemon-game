@@ -65,6 +65,9 @@ class PokemonActivity final : public Activity {
     Badges,
     HallOfFame,
     Settings,
+#if defined(CROSSINK_POKEMON_EXTRAS)
+    Extras,  // Settings > Extras: one on/off row per extras feature
+#endif
     ResetFirst,
     ResetFinal,
     Message,
