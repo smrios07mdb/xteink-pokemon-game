@@ -1,5 +1,9 @@
 # M2 hooks: what Claude Code wires on the Mac
 
+**Status: done (2026-11-14).** Results, the gate and the firmware size are in the M2 row of
+[PROGRESS.md](PROGRESS.md). Day Care XP uses `awardFixedXp` (see "Box safety" below: the Pokémon
+screen does resolve prompts for boxed records). Kept as the record of what was asked.
+
 The pure M2 rules are done on branch `feat/extras-m2-rules` (chat, 2026-11-13). This file is the
 handoff for the device-side half: the service hooks, the UI, the gate, and the PR. Read
 [SAVE-SAFETY.md](SAVE-SAFETY.md) first. Specs: [02-streaks](features/02-streaks.md),
