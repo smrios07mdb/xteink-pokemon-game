@@ -24,6 +24,8 @@ set(POKEMON_EXTRAS_COMPAT_SOURCES
   ${REPO_ROOT}/lib/Pokemon/PokemonExtras.cpp
   ${REPO_ROOT}/lib/Pokemon/PokemonExtrasCodec.cpp
   ${REPO_ROOT}/lib/Pokemon/PokemonExtrasRules.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonExtrasEggs.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonExtrasQuests.cpp
   ${REPO_ROOT}/src/pokemon/PokemonStore.cpp
   ${REPO_ROOT}/src/pokemon/PokemonBattleStore.cpp
   ${REPO_ROOT}/src/pokemon/PokemonIvEvStore.cpp

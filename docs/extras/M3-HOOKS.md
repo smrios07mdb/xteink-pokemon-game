@@ -1,5 +1,8 @@
 # M3 hooks: what Claude Code wires on the Mac
 
+**Status: done (2026-11-14).** Results, the gate and the firmware size are in the M3 row of
+[PROGRESS.md](PROGRESS.md). Kept as the record of what was asked.
+
 The pure M3 rules are done on branch `feat/extras-m3-rules` (chat, 2026-11-14). This file is the
 handoff for the device-side half: the service hooks, the UI, the compat test, the gate, and the PR.
 Read [SAVE-SAFETY.md](SAVE-SAFETY.md) first. Specs: [01-eggs](features/01-eggs.md),

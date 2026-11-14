@@ -25,6 +25,8 @@
 #include "components/pokemon/PokemonArt.h"
 #include "fontIds.h"
 #if defined(CROSSINK_POKEMON_EXTRAS)
+#include <PokemonExtrasLayout.h>
+
 #include "pokemon/PokemonExtrasHooks.h"
 #include "pokemon/PokemonExtrasStore.h"
 #endif
@@ -80,6 +82,8 @@ const char* settingsActionLabel(const int index) {
 // Extras (docs/extras/PLAN.md): the last Screen::Settings row opens
 // Screen::Extras, one toggle row per extras::Feature, saved in the extras file.
 constexpr int SETTINGS_EXTRAS_ROW = SETTINGS_TOGGLE_COUNT + 3;
+// M3: the Menu's ninth button (full width, after Settings) opens Screen::Quests.
+constexpr int MENU_QUESTS_INDEX = 8;
 
 const char* extrasFeatureLabel(const int index) {
   switch (static_cast<pokemon::extras::Feature>(index)) {
@@ -860,8 +864,16 @@ void PokemonActivity::loadInitialScreen() {
     setScreen(Screen::Starter);
   } else if (status != pokemon::ServiceStatus::Ok) {
     showMessage(tr(STR_POKEMON_SAVE_ERROR), Screen::Menu);
-  } else if (!showReceivedItems()) {
-    setScreen(pokemon::pendingEventFront(snapshot_.state) == nullptr ? Screen::Menu : Screen::Event);
+  } else {
+#if defined(CROSSINK_POKEMON_EXTRAS)
+    // Pokemon menu open (docs/extras/M3-HOOKS.md): a new day may have begun,
+    // and a ready egg hatches. Both best effort: a failure shows the menu.
+    service_.refreshDailyQuests();
+    if (pokemon::pendingEventFront(snapshot_.state) == nullptr && hatchEggIfReady()) return;
+#endif
+    if (!showReceivedItems()) {
+      setScreen(pokemon::pendingEventFront(snapshot_.state) == nullptr ? Screen::Menu : Screen::Event);
+    }
   }
 }
 
@@ -962,6 +974,7 @@ bool PokemonActivity::isChoiceButtonScreen() const {
     case Screen::Settings:
 #if defined(CROSSINK_POKEMON_EXTRAS)
     case Screen::Extras:
+    case Screen::Quests:
 #endif
     case Screen::Actions:
     case Screen::Moveset:
@@ -984,7 +997,7 @@ bool PokemonActivity::isChoiceButtonScreen() const {
 int PokemonActivity::choiceColumns() const {
   if (screen_ == Screen::Settings || screen_ == Screen::Message) return 1;
 #if defined(CROSSINK_POKEMON_EXTRAS)
-  if (screen_ == Screen::Extras) return 1;
+  if (screen_ == Screen::Extras || screen_ == Screen::Quests) return 1;
 #endif
   if (screen_ == Screen::Event) {
     const pokemon::PendingEvent* pending = pokemon::pendingEventFront(snapshot_.state);
@@ -1115,12 +1128,18 @@ int PokemonActivity::logicalCount() const {
     case Screen::EvolveConfirm:
       return screen_ == Screen::Move ? snapshot_.partyCount : 2;
     case Screen::Menu:
+#if defined(CROSSINK_POKEMON_EXTRAS)
+      if (menuShowsQuests()) return MENU_QUESTS_INDEX + 1;
+#endif
       return 8;
     case Screen::Settings:
 #if defined(CROSSINK_POKEMON_EXTRAS)
       return SETTINGS_EXTRAS_ROW + 1;
     case Screen::Extras:
       return pokemon::extras::FEATURE_COUNT;
+    case Screen::Quests:
+      // The three quests, then Claim while a reward is ready.
+      return static_cast<int>(pokemon::extras::DAILY_QUEST_SLOTS) + (questReadyMask_ != 0 ? 1 : 0);
 #endif
       return SETTINGS_TOGGLE_COUNT + 3;
     case Screen::Party:
@@ -1256,7 +1275,96 @@ const char* PokemonActivity::actionLabel(const pokemon::CollectionAction action)
 }
 
 #if defined(CROSSINK_POKEMON_EXTRAS)
+bool PokemonActivity::menuShowsQuests() const {
+  return pokemon::devicePokemonExtrasStore().isFeatureEnabled(pokemon::extras::Feature::DailyQuests);
+}
+
+bool PokemonActivity::hatchEggIfReady() {
+  uint32_t recordId = 0;
+  uint16_t speciesId = 0;
+  // BoxFull: the egg waits at 0 pages and the Menu's Egg line says why.
+  if (service_.hatchReadyEgg(recordId, speciesId) != pokemon::ServiceStatus::Ok || recordId == 0) return false;
+  if (!refreshSnapshot()) return true;  // it showed the error
+  // Same nickname flow as a catch: the record already exists.
+  nicknamePrompt_ = pokemon::PokemonPromptContext::forCaught(speciesId, recordId);
+  snprintf(message_, sizeof(message_), tr(STR_POKEMON_EGG_HATCHED_QUESTION), speciesName(speciesId));
+  setScreen(Screen::NicknameQuestion);
+  return true;
+}
+
+void PokemonActivity::questRowLabel(const int index, char* out, const size_t size) const {
+  if (size == 0) return;
+  out[0] = '\0';
+  const auto& state = pokemon::devicePokemonExtrasStore().state();
+  if (index >= static_cast<int>(pokemon::extras::DAILY_QUEST_SLOTS)) {
+    snprintf(out, size, "%s", tr(STR_POKEMON_QUESTS_CLAIM));
+    return;
+  }
+  const auto slot = static_cast<uint8_t>(index);
+  const pokemon::extras::QuestKind kind = pokemon::extras::questKindAt(state, slot);
+  const uint16_t target = pokemon::extras::questTarget(kind);
+  char name[48];
+  switch (kind) {
+    case pokemon::extras::QuestKind::Read20:
+    case pokemon::extras::QuestKind::Read40:
+    case pokemon::extras::QuestKind::Read60:
+      snprintf(name, sizeof(name), tr(STR_POKEMON_QUEST_READ), static_cast<unsigned>(target));
+      break;
+    case pokemon::extras::QuestKind::WinWild:
+      snprintf(name, sizeof(name), "%s", tr(STR_POKEMON_QUEST_WIN_WILD));
+      break;
+    case pokemon::extras::QuestKind::WinTrainer:
+      snprintf(name, sizeof(name), "%s", tr(STR_POKEMON_QUEST_WIN_TRAINER));
+      break;
+    case pokemon::extras::QuestKind::CatchAny:
+      snprintf(name, sizeof(name), "%s", tr(STR_POKEMON_QUEST_CATCH_ANY));
+      break;
+    case pokemon::extras::QuestKind::CatchNew:
+      snprintf(name, sizeof(name), "%s", tr(STR_POKEMON_QUEST_CATCH_NEW));
+      break;
+    case pokemon::extras::QuestKind::EggPages100:
+      snprintf(name, sizeof(name), "%s", tr(STR_POKEMON_QUEST_EGG_PAGES));
+      break;
+    case pokemon::extras::QuestKind::LevelUp:
+      snprintf(name, sizeof(name), "%s", tr(STR_POKEMON_QUEST_LEVEL_UP));
+      break;
+    case pokemon::extras::QuestKind::None:
+    default:
+      snprintf(out, size, "-");
+      return;
+  }
+  const uint8_t bit = static_cast<uint8_t>(1U << slot);
+  const uint16_t progress = std::min<uint16_t>(state.questProgress[slot], target);
+  if ((state.questRewardedMask & bit) != 0) {
+    snprintf(out, size, "%s  %u/%u  %s", name, static_cast<unsigned>(progress), static_cast<unsigned>(target),
+             tr(STR_POKEMON_QUEST_CLAIMED));
+  } else if ((state.questDoneMask & bit) != 0) {
+    snprintf(out, size, "%s  %u/%u  %s", name, static_cast<unsigned>(progress), static_cast<unsigned>(target),
+             tr(STR_POKEMON_QUEST_DONE));
+  } else {
+    snprintf(out, size, "%s  %u/%u", name, static_cast<unsigned>(progress), static_cast<unsigned>(target));
+  }
+}
+
 void PokemonActivity::refreshExtrasLine(const Screen screen) {
+  if (screen == Screen::Menu || screen == Screen::Quests) {
+    // Read from memory only: the Pokemon menu draws without an SD read.
+    auto& extrasStore = pokemon::devicePokemonExtrasStore();
+    eggLine_[0] = '\0';
+    eggPercent_ = 0;
+    if (extrasStore.isFeatureEnabled(pokemon::extras::Feature::Eggs)) {
+      const pokemon::extras::EggProgress egg = pokemon::extras::eggProgress(extrasStore.state());
+      if (egg.held && egg.ready) {
+        snprintf(eggLine_, sizeof(eggLine_), "%s", tr(STR_POKEMON_EGG_WAITING));
+        eggPercent_ = 100;
+      } else if (egg.held) {
+        snprintf(eggLine_, sizeof(eggLine_), tr(STR_POKEMON_EGG_LINE), static_cast<unsigned>(egg.pagesRemaining));
+        eggPercent_ = pokemon::extras::eggProgressPercent(egg.pagesRemaining, egg.totalPages);
+      }
+    }
+    if (screen == Screen::Quests) service_.refreshDailyQuests();  // a new day may have begun
+    questReadyMask_ = pokemon::extras::questRewardsReadyMask(extrasStore.state());
+  }
   if (screen == Screen::Menu) {
     dayCareLine_[0] = '\0';
     pokemon::PokemonRecord resident{};
@@ -2272,6 +2380,9 @@ void PokemonActivity::finishBattleAfterWildFainted() {
   }
   const uint16_t opponentSpecies = battleOpponent_.speciesId;
   uint32_t caught = 0;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  service_.noteWildBattleWon();  // daily quests; extras only, best effort
+#endif
   // The wild Pokemon fainted from the fight - nothing left to catch. Pass
   // clears the pending encounter without creating a record, same as always.
   service_.resolveEncounter(pokemon::EncounterChoice::Pass, caught);
@@ -2458,6 +2569,12 @@ void PokemonActivity::activate() {
       }
       return;
     case Screen::Menu:
+#if defined(CROSSINK_POKEMON_EXTRAS)
+      if (selected_ == MENU_QUESTS_INDEX) {
+        setScreen(Screen::Quests);
+        return;
+      }
+#endif
       if (selected_ == 0)
         setScreen(Screen::Party);
       else if (selected_ == 1)
@@ -2476,6 +2593,25 @@ void PokemonActivity::activate() {
         setScreen(Screen::Settings);
       return;
 #if defined(CROSSINK_POKEMON_EXTRAS)
+    case Screen::Quests: {
+      // Only the Claim row acts; the quest rows are read-only.
+      if (selected_ < static_cast<int>(pokemon::extras::DAILY_QUEST_SLOTS)) return;
+      pokemon::extras::QuestRewards granted{};
+      const pokemon::ServiceStatus status = service_.claimQuestRewards(granted);
+      if (status == pokemon::ServiceStatus::NotApplicable) {
+        showMessage(tr(STR_POKEMON_QUESTS_NOTHING), Screen::Quests);
+        return;
+      }
+      if (status != pokemon::ServiceStatus::Ok) {
+        showMessage(tr(STR_POKEMON_SAVE_ERROR), Screen::Quests);
+        return;
+      }
+      // The items went into the bag like upstream's drops: show them on the
+      // usual "items received" list.
+      if (!refreshSnapshot()) return;
+      if (!showReceivedItems()) setScreen(Screen::Quests);
+      return;
+    }
     case Screen::Extras: {
       const auto feature = static_cast<pokemon::extras::Feature>(selected_);
       auto& extrasStore = pokemon::devicePokemonExtrasStore();
@@ -3241,6 +3377,9 @@ void PokemonActivity::activate() {
         showMessage(tr(STR_POKEMON_SAVE_ERROR), Screen::Menu);
         return;
       }
+#if defined(CROSSINK_POKEMON_EXTRAS)
+      service_.noteWildBattleWon();  // a catch is a won battle (it gave the battle XP above)
+#endif
       if (!refreshSnapshot()) return;
       nicknamePrompt_ = pokemon::PokemonPromptContext::forCaught(caughtSpecies, caughtRecordId);
       snprintf(message_, sizeof(message_), tr(STR_POKEMON_NICKNAME_QUESTION), speciesName(caughtSpecies));
@@ -3846,6 +3985,12 @@ void PokemonActivity::buildRows() {
       case Screen::Extras:
         row(local, extrasFeatureLabel(index), extrasFeatureValue(index));
         break;
+      case Screen::Quests: {
+        char label[64];
+        questRowLabel(index, label, sizeof(label));
+        row(local, label);
+        break;
+      }
 #endif
       case Screen::Settings:
 #if defined(CROSSINK_POKEMON_EXTRAS)
@@ -4782,6 +4927,13 @@ void PokemonActivity::renderMenuGrid() {
   const int count = logicalCount();
   if (count <= 0) return;
   for (int index = 0; index < count; ++index) {
+#if defined(CROSSINK_POKEMON_EXTRAS)
+    if (index == MENU_QUESTS_INDEX) {
+      drawGridButton(buttonGridCellRect(index), index == selected_,
+                     questReadyMask_ != 0 ? tr(STR_POKEMON_QUESTS_READY) : tr(STR_POKEMON_QUESTS));
+      continue;
+    }
+#endif
     const char* label = index == 0   ? tr(STR_POKEMON_PARTY)
                         : index == 1 ? tr(STR_POKEDEX)
                         : index == 2 ? tr(STR_POKEMON_PC_BOX)
@@ -4860,6 +5012,18 @@ void PokemonActivity::renderMenuPityBars() {
   if (dayCareLine_[0] != '\0') {
     centered(renderer, UI_10_FONT_ID, gridBottom + 6, dayCareLine_);
     gridBottom += renderer.getLineHeight(UI_10_FONT_ID) + 10;
+  }
+  // "Egg: 412 pages to go" and its bar.
+  if (eggLine_[0] != '\0') {
+    centered(renderer, UI_10_FONT_ID, gridBottom + 6, eggLine_);
+    gridBottom += renderer.getLineHeight(UI_10_FONT_ID) + 10;
+    constexpr int eggBarWidth = 180;
+    constexpr int eggBarHeight = 8;
+    const int eggBarX = (renderer.getScreenWidth() - eggBarWidth) / 2;
+    renderer.drawRect(eggBarX, gridBottom, eggBarWidth, eggBarHeight, true);
+    const int filled = (eggBarWidth - 2) * eggPercent_ / 100;
+    if (filled > 0) renderer.fillRect(eggBarX + 1, gridBottom + 1, filled, eggBarHeight - 2, true);
+    gridBottom += eggBarHeight + 10;
   }
 #endif
 
@@ -5387,6 +5551,10 @@ void PokemonActivity::renderChoiceButtons() {
 #if defined(CROSSINK_POKEMON_EXTRAS)
       case Screen::Extras:
         snprintf(combined, sizeof(combined), "%s: %s", extrasFeatureLabel(index), extrasFeatureValue(index));
+        label = combined;
+        break;
+      case Screen::Quests:
+        questRowLabel(index, combined, sizeof(combined));
         label = combined;
         break;
 #endif
@@ -6209,6 +6377,8 @@ void PokemonActivity::renderHeaderAndHints() {
 #if defined(CROSSINK_POKEMON_EXTRAS)
   else if (screen_ == Screen::Extras)
     title = tr(STR_POKEMON_EXTRAS);
+  else if (screen_ == Screen::Quests)
+    title = tr(STR_POKEMON_QUESTS);
 #endif
   else if (screen_ == Screen::PcReleaseConfirm)
     title = tr(STR_POKEMON_PC_BOX);

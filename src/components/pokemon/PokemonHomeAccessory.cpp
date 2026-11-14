@@ -16,6 +16,12 @@
 #include "components/UiAppHelpers.h"
 #include "components/icons/homeExtraIcons.h"
 #include "fontIds.h"
+#if defined(CROSSINK_POKEMON_EXTRAS)
+#include <PokemonExtrasEggs.h>
+#include <PokemonExtrasQuests.h>
+
+#include "pokemon/PokemonExtrasStore.h"
+#endif
 
 namespace pokemon {
 namespace {
@@ -100,7 +106,17 @@ void drawPokemonHomeAccessory(const GfxRenderer& renderer, const PokemonDashboar
                     fit(renderer, UI_10_FONT_ID, levelText, layout.level.width, levelFit));
   renderer.drawText(UI_10_FONT_ID, bounds.x + layout.xp.x, bottom,
                     fit(renderer, UI_10_FONT_ID, xpText, layout.xp.width, xpFit));
-  if (snapshot.notice != DashboardNotice::None) {
+  bool showNotice = snapshot.notice != DashboardNotice::None;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  // Extras M3: an egg ready to hatch or a quest reward to claim. Read from the
+  // extras file only; DashboardNotice is never set for it (SAVE-SAFETY R2).
+  if (!showNotice) {
+    auto& extrasStore = devicePokemonExtrasStore();
+    showNotice = (extrasStore.isFeatureEnabled(extras::Feature::Eggs) && extras::isEggReadyToHatch(extrasStore.state())) ||
+                 extras::questRewardsReadyMask(extrasStore.state()) != 0;
+  }
+#endif
+  if (showNotice) {
     constexpr const char* indicator = "!";
     const int noticeX =
         bounds.x + layout.notice.x +

@@ -12,6 +12,8 @@
 #include "PokemonMovesetStore.h"
 #include "PokemonStore.h"
 #if defined(CROSSINK_POKEMON_EXTRAS)
+#include <PokemonExtrasEggs.h>
+#include <PokemonExtrasQuests.h>
 #include <PokemonExtrasRules.h>
 #endif
 
@@ -396,6 +398,27 @@ class PokemonService {
   // Read-only: the Pokemon in Day Care. False when the slot is empty or its
   // record cannot be read.
   bool readDayCareRecord(PokemonRecord& output);
+
+  // Extras M3 (docs/extras/M3-HOOKS.md), also in PokemonServiceExtras.cpp.
+  //
+  // Pokemon menu open: hatches a ready egg. Appends it like a catch (SAVE-SAFETY
+  // R3) in three commits: extras (intent), main save, extras (done); a crash in
+  // between is settled on the next extras use, never two records from one egg.
+  // NotApplicable: no egg ready (or Eggs off). BoxFull: Party and PC Box full,
+  // the egg waits. Ok: `recordId`/`speciesId` are the new Pokemon.
+  ServiceStatus hatchReadyEgg(uint32_t& recordId, uint16_t& speciesId);
+  // A forward page turn in the reader. RAM only: counted toward the egg at the
+  // next reading-credit checkpoint, never one SD write per page.
+  void countExtrasEggPage();
+  // Pokemon menu / Quests screen open: chooses or rotates the day's quests
+  // (a new day may have begun) and grants the ready rewards of an expired set.
+  ServiceStatus refreshDailyQuests();
+  // Quests screen > Claim: every ready reward. Extras first, then the bag; a
+  // failed bag write puts the rewards back. NotApplicable: nothing ready.
+  ServiceStatus claimQuestRewards(extras::QuestRewards& granted);
+  // A wild battle won (fainted or caught). Road trainers and gyms are counted
+  // inside resolveTrainer() / markGymDefeated().
+  void noteWildBattleWon();
 #endif
 
  private:
@@ -465,11 +488,28 @@ class PokemonService {
   void clearPendingIvEvRoll(uint32_t recordId);
 #if defined(CROSSINK_POKEMON_EXTRAS)
   // creditMinutes()'s extras tail: streak bonus XP, the streak milestone
-  // encounter and Day Care XP. Best effort (SAVE-SAFETY R5): it reports
+  // encounter and Day Care XP (M2); egg pages, the egg find and the daily
+  // quests (M3). Best effort (SAVE-SAFETY R5): it reports
   // nothing back and never changes what creditMinutes() returns.
-  void applyExtrasAfterCredit(uint16_t minutes, uint8_t bookProgressPercent);
+  void applyExtrasAfterCredit(uint16_t minutes, uint8_t bookProgressPercent, uint32_t lifetimeMinutesBefore,
+                              uint8_t leaderLevelBefore);
   // After a boxed Pokemon went to the Party or was released.
   void clearDayCareIfHolds(uint32_t recordId);
+  // M3: settles a hatch cut off between its commits (docs/extras/M3-HOOKS.md
+  // section 1). Runs first in every extras entry point while one is pending.
+  void settleExtrasPendingHatch();
+  // M3 quest events (section 5): load extras, apply, commit if changed. Best
+  // effort: a failure never blocks the battle or catch that triggered it.
+  void applyExtrasQuestEvent(uint8_t (*event)(extras::ExtrasState&, bool), bool argument);
+  // Commits `after`; then, when `items` holds any, puts them in the bag. A
+  // failed bag write commits `before` again (loss over duplication, R6).
+  bool commitExtrasWithQuestItems(const extras::ExtrasState& before, const extras::ExtrasState& after,
+                                  const extras::QuestRewards& items);
+  // Forward page turns since the last credit that reached the extras file.
+  uint32_t extrasEggPagesPending_ = 0;
+  // Set while applyExtrasAfterCredit() runs: its own XP grants must not write
+  // extras behind its back (it counts the lead's level-up itself).
+  bool extrasCreditActive_ = false;
 #endif
 
   PokemonStore& store_;

@@ -5,6 +5,7 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <PokemonExtrasEggs.h>
 #include <PokemonExtrasLayout.h>
 #include <PokemonSpecies.h>
 #include <PokemonTypes.h>
@@ -67,7 +68,11 @@ bool drawPartySleepScreen(GfxRenderer& renderer) {
   ReadingStatsDateTime now{};
   extras::PartySleepContent content{};
   content.clockValid = getCurrentLocalReadingStatsDateTime(now);
-  content.hasEgg = extrasState.eggSpeciesId != 0;
+  // Eggs off hides the egg, as on the Pokemon menu.
+  const extras::EggProgress egg = devicePokemonExtrasStore().isFeatureEnabled(extras::Feature::Eggs)
+                                      ? extras::eggProgress(extrasState)
+                                      : extras::EggProgress{};
+  content.hasEgg = egg.held;
 
   constexpr int font = UI_12_FONT_ID;
   const extras::PartySleepLayout layout = extras::partySleepLayout(
@@ -116,8 +121,12 @@ bool drawPartySleepScreen(GfxRenderer& renderer) {
     drawCenteredLine(renderer, font, layout.streak, line);
   }
   if (layout.showEgg) {
-    snprintf(line, sizeof(line), tr(STR_POKEMON_SLEEP_EGG), static_cast<unsigned>(extrasState.eggPagesRemaining));
+    snprintf(line, sizeof(line), tr(STR_POKEMON_SLEEP_EGG), static_cast<unsigned>(egg.pagesRemaining));
     drawCenteredLine(renderer, font, layout.egg, line);
+    const int eggBarX = layout.eggBar.x + (layout.eggBar.width - barWidth) / 2;
+    renderer.drawRect(eggBarX, layout.eggBar.y, barWidth, layout.eggBar.height, true);
+    const int eggFilled = (barWidth - 2) * extras::eggProgressPercent(egg.pagesRemaining, egg.totalPages) / 100;
+    if (eggFilled > 0) renderer.fillRect(eggBarX + 1, layout.eggBar.y + 1, eggFilled, layout.eggBar.height - 2, true);
   }
   return true;
 }
