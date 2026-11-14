@@ -48,3 +48,41 @@ target_include_directories(PokemonExtrasLayoutTest PRIVATE "${REPO_ROOT}/lib/Pok
 target_compile_definitions(PokemonExtrasLayoutTest PRIVATE CROSSINK_POKEMON_EXTRAS=1)
 target_link_libraries(PokemonExtrasLayoutTest PRIVATE crosspoint_test_common)
 add_test(NAME PokemonExtrasLayoutTest COMMAND PokemonExtrasLayoutTest)
+
+# M3 rules: eggs (01-eggs.md) and daily quests (08-daily-quests.md). Same
+# species/item data and generated headers as PokemonExtrasRulesTest.
+add_executable(PokemonExtrasEggsTest
+  PokemonExtrasEggsTest.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonExtras.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonExtrasEggs.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonTypes.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonSpecies.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonItemData.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonGame.cpp
+)
+add_dependencies(PokemonExtrasEggsTest PokemonGameTest)
+target_include_directories(PokemonExtrasEggsTest PRIVATE
+  "${REPO_ROOT}/lib/Pokemon"
+  "${POKEMON_EXTRAS_RULES_GENERATED_DIR}"
+)
+target_compile_definitions(PokemonExtrasEggsTest PRIVATE CROSSINK_POKEMON_EXTRAS=1)
+target_link_libraries(PokemonExtrasEggsTest PRIVATE crosspoint_test_common)
+add_test(NAME PokemonExtrasEggsTest COMMAND PokemonExtrasEggsTest)
+
+add_executable(PokemonExtrasQuestsTest
+  PokemonExtrasQuestsTest.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonExtras.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonExtrasQuests.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonTypes.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonSpecies.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonItemData.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonGame.cpp
+)
+add_dependencies(PokemonExtrasQuestsTest PokemonGameTest)
+target_include_directories(PokemonExtrasQuestsTest PRIVATE
+  "${REPO_ROOT}/lib/Pokemon"
+  "${POKEMON_EXTRAS_RULES_GENERATED_DIR}"
+)
+target_compile_definitions(PokemonExtrasQuestsTest PRIVATE CROSSINK_POKEMON_EXTRAS=1)
+target_link_libraries(PokemonExtrasQuestsTest PRIVATE crosspoint_test_common)
+add_test(NAME PokemonExtrasQuestsTest COMMAND PokemonExtrasQuestsTest)
