@@ -564,6 +564,9 @@ void XtcReaderActivity::loop() {
     pokemonService.setBookProgressPercent(
         static_cast<uint8_t>(std::clamp(static_cast<int>(getCurrentBookProgressPercent() + 0.5f), 0, 100)));
     pokemonService.onSuccessfulPageTurn(millis());
+#if defined(CROSSINK_POKEMON_EXTRAS)
+    if (nextTriggered && !prevTriggered) pokemonService.countExtrasEggPage();  // egg pages, RAM only
+#endif
   }
 #endif
   if (goHome) {

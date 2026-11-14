@@ -33,7 +33,7 @@ bool empty(const SleepBox& box) { return box.width == 0 && box.height == 0; }
 // Visible boxes in order, top to bottom, without overlap.
 bool stackedInOrder(const PartySleepLayout& layout) {
   const SleepBox* boxes[] = {&layout.art,   &layout.name,   &layout.level, &layout.xpBar,
-                             &layout.today, &layout.streak, &layout.egg};
+                             &layout.today, &layout.streak, &layout.egg,  &layout.eggBar};
   int bottom = 0;
   for (const SleepBox* box : boxes) {
     if (empty(*box)) continue;
@@ -50,15 +50,17 @@ void fullScreenWithClockAndEgg() {
   CHECK(layout.art.width == ART && layout.art.height == ART);
   CHECK(layout.art.x == (W - ART) / 2);
   for (const SleepBox& box : {layout.art, layout.name, layout.level, layout.xpBar, layout.today, layout.streak,
-                              layout.egg}) {
+                              layout.egg, layout.eggBar}) {
     CHECK(inside(box, W, H));
   }
   CHECK(stackedInOrder(layout));
   CHECK(layout.xpBar.height == kPartySleepXpBarHeight);
   CHECK(layout.name.width == W - 2 * kPartySleepMargin);
-  // Centred: equal space above the art and below the egg line (within 1 px).
+  CHECK(layout.eggBar.height == kPartySleepXpBarHeight);
+  CHECK(layout.eggBar.y == layout.egg.y + layout.egg.height + kPartySleepXpBarGap);
+  // Centred: equal space above the art and below the egg bar (within 1 px).
   const int above = layout.art.y;
-  const int below = H - (layout.egg.y + layout.egg.height);
+  const int below = H - (layout.eggBar.y + layout.eggBar.height);
   CHECK(above - below >= -1 && above - below <= 1);
 }
 
@@ -66,7 +68,7 @@ void noEggHidesTheEggLine() {
   const PartySleepLayout layout = partySleepLayout(W, H, LINE, ART, {true, false});
   CHECK(layout.valid);
   CHECK(layout.showToday && layout.showStreak && !layout.showEgg);
-  CHECK(empty(layout.egg));
+  CHECK(empty(layout.egg) && empty(layout.eggBar));
   CHECK(stackedInOrder(layout));
 }
 
@@ -92,13 +94,14 @@ void landscapeAndSmallScreensShrinkThenDropTheArt() {
   CHECK(stackedInOrder(landscape));
 
   // Text fits but not even a 48 px art: the art is dropped.
-  const int textOnly = 2 * kPartySleepMargin + 5 * LINE + kPartySleepXpBarGap + kPartySleepXpBarHeight +
+  const int textOnly = 2 * kPartySleepMargin + 5 * LINE + 2 * (kPartySleepXpBarGap + kPartySleepXpBarHeight) +
                        kPartySleepSectionGap;
   const PartySleepLayout tight = partySleepLayout(W, textOnly + 20, LINE, ART, {true, true});
   CHECK(tight.valid);
   CHECK(empty(tight.art));
   CHECK(stackedInOrder(tight));
   CHECK(inside(tight.egg, W, textOnly + 20));
+  CHECK(inside(tight.eggBar, W, textOnly + 20));
 
   // Not even the text fits: invalid, the caller falls through.
   CHECK(!partySleepLayout(W, textOnly - 1, LINE, ART, {true, true}).valid);

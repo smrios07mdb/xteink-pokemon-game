@@ -25,7 +25,7 @@ struct PartySleepContent {
 };
 
 // Top to bottom: art, nickname, level, XP bar, then today's reading time,
-// streak and egg progress. Hidden lines get an empty box and show* = false;
+// streak and egg progress (a line and a bar). Hidden lines get an empty box and show* = false;
 // the block is centred vertically on the screen.
 struct PartySleepLayout {
   SleepBox art{};
@@ -35,6 +35,7 @@ struct PartySleepLayout {
   SleepBox today{};
   SleepBox streak{};
   SleepBox egg{};
+  SleepBox eggBar{};  // under the egg line (M3: the egg's total pages are known)
   bool showToday = false;
   bool showStreak = false;
   bool showEgg = false;

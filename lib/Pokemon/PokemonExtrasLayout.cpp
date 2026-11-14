@@ -19,7 +19,8 @@ PartySleepLayout partySleepLayout(const int width, const int height, const int l
   const int readingLines = (layout.showToday ? 1 : 0) + (layout.showStreak ? 1 : 0) + (layout.showEgg ? 1 : 0);
 
   const int leadText = 2 * lineHeight + kPartySleepXpBarGap + kPartySleepXpBarHeight;
-  const int readingText = readingLines > 0 ? kPartySleepSectionGap + readingLines * lineHeight : 0;
+  const int eggBarHeight = layout.showEgg ? kPartySleepXpBarGap + kPartySleepXpBarHeight : 0;
+  const int readingText = readingLines > 0 ? kPartySleepSectionGap + readingLines * lineHeight + eggBarHeight : 0;
   const int textHeight = leadText + readingText;
   if (textHeight > contentHeight) return layout;
 
@@ -44,7 +45,11 @@ PartySleepLayout partySleepLayout(const int width, const int height, const int l
   if (readingLines > 0) y += kPartySleepSectionGap;
   if (layout.showToday) line(layout.today, lineHeight);
   if (layout.showStreak) line(layout.streak, lineHeight);
-  if (layout.showEgg) line(layout.egg, lineHeight);
+  if (layout.showEgg) {
+    line(layout.egg, lineHeight);
+    y += kPartySleepXpBarGap;
+    line(layout.eggBar, kPartySleepXpBarHeight);
+  }
 
   layout.valid = true;
   return layout;

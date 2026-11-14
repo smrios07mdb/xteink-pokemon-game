@@ -67,6 +67,7 @@ class PokemonActivity final : public Activity {
     Settings,
 #if defined(CROSSINK_POKEMON_EXTRAS)
     Extras,  // Settings > Extras: one on/off row per extras feature
+    Quests,  // Menu > Quests: the day's three quests and Claim
 #endif
     ResetFirst,
     ResetFinal,
@@ -283,6 +284,13 @@ class PokemonActivity final : public Activity {
   // Re-reads the Menu's Day Care line or the Trainer Card's streak line when
   // that screen opens, so drawing them costs no SD read per frame.
   void refreshExtrasLine(Screen screen);
+  // M3: the Menu's Quests button shows while Daily quests is on.
+  bool menuShowsQuests() const;
+  // M3, Pokemon menu open: hatches a ready egg and asks for its nickname.
+  // False when there was nothing to hatch (or it could not be).
+  bool hatchEggIfReady();
+  // Screen::Quests: the rows drawn for the three quests and the Claim row.
+  void questRowLabel(int index, char* out, size_t size) const;
 #endif
   bool showsPartyHealthRows() const;
   bool showsMachineCapabilityRows() const;
@@ -330,6 +338,9 @@ class PokemonActivity final : public Activity {
 #if defined(CROSSINK_POKEMON_EXTRAS)
   char dayCareLine_[72]{};  // "Day Care: Eevee Lv 14"; empty = slot empty
   char streakLine_[72]{};   // "Streak: 6 days (+30% XP)"; empty = hidden (no clock, or Streaks off)
+  char eggLine_[72]{};      // "Egg: 412 pages to go"; empty = no egg, or Eggs off
+  uint8_t eggPercent_ = 0;  // the Menu's egg bar, 0..100
+  uint8_t questReadyMask_ = 0;  // questRewardsReadyMask() when the Menu or Quests screen opened
 #endif
   char message_[192]{};  // long enough for a 32-byte nickname inside a translated (up to ~2 bytes per letter) sentence
   pokemon::BattleCombatant battlePlayer_{};

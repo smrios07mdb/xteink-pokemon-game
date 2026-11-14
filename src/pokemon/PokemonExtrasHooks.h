@@ -2,6 +2,7 @@
 
 #if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
 
+#include <PokemonExtrasQuests.h>
 #include <PokemonExtrasRules.h>
 
 namespace pokemon {
@@ -22,6 +23,13 @@ using ExtrasStreakInputSource = extras::StreakInput (*)();
 void setExtrasStreakInputSource(ExtrasStreakInputSource source);
 
 extras::StreakInput readExtrasStreakInput();
+
+// Extras M3: the day the daily quests belong to. Same clock as the streak
+// (getCurrentLocalReadingStatsDateTime(), readingStatsDayIndex()), read-only,
+// without reading global_stats.bin. Host default: no clock.
+using ExtrasQuestClockSource = extras::QuestClock (*)();
+void setExtrasQuestClockSource(ExtrasQuestClockSource source);
+extras::QuestClock readExtrasQuestClock();
 
 }  // namespace pokemon
 

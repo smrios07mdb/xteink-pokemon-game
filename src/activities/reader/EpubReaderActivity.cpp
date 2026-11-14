@@ -6331,6 +6331,9 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn, const char* source) {
     pokemonService.setBookProgressPercent(
         static_cast<uint8_t>(clampPercent(static_cast<int>(getCurrentBookProgressPercent() + 0.5f))));
     pokemonService.onSuccessfulPageTurn(millis());
+#if defined(CROSSINK_POKEMON_EXTRAS)
+    if (isForwardTurn) pokemonService.countExtrasEggPage();  // egg pages, RAM only
+#endif
   }
 #endif
   lastPageTurnTime = millis();

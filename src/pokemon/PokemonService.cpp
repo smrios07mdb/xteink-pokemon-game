@@ -349,11 +349,20 @@ ServiceStatus PokemonService::resolveEncounter(const EncounterChoice choice, uin
     // has the full reasoning).
     mutation.requestedRecordId = store_.nextRecordId();
   }
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  const uint16_t caughtSpeciesBefore = countMarkedSpecies(state.caughtSpecies);
+#endif
   if (!pokemon::resolveEncounter(state, leader, choice, "", mutation)) return ServiceStatus::NotApplicable;
   if (!store_.commit(state, mutation)) {
     LOG_ERR("PokemonService", "Failed to resolve encounter");
     return ServiceStatus::StorageError;
   }
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  // Daily quests, after the main commit (SAVE-SAFETY R6), best effort (R5).
+  if (mutation.kind == RecordMutationKind::Append) {
+    applyExtrasQuestEvent(extras::recordQuestCatch, countMarkedSpecies(state.caughtSpecies) > caughtSpeciesBefore);
+  }
+#endif
   if (mutation.kind == RecordMutationKind::Append) {
     caughtRecordId = mutation.record.recordId;
     // A released record's ids can be handed out again; if its best-effort side-store cleanup ever failed, drop the
@@ -431,6 +440,9 @@ ServiceStatus PokemonService::resolveTrainer(const bool won, uint8_t& rewardItem
     rewardItemId = 0;
     return ServiceStatus::StorageError;
   }
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  if (won) applyExtrasQuestEvent(extras::recordQuestBattleWin, /*trainer=*/true);
+#endif
   return ServiceStatus::Ok;
 }
 
@@ -1034,6 +1046,9 @@ ServiceStatus PokemonService::markGymDefeated(const uint8_t gymIndex) {
     LOG_ERR("PokemonService", "Failed to record gym victory");
     return ServiceStatus::StorageError;
   }
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  applyExtrasQuestEvent(extras::recordQuestBattleWin, /*trainer=*/true);
+#endif
   return ServiceStatus::Ok;
 }
 
@@ -1529,6 +1544,13 @@ ServiceStatus PokemonService::grantXp(PokemonRecord record, const uint32_t xpGai
     LOG_ERR("PokemonService", "Failed to award battle XP");
     return ServiceStatus::StorageError;
   }
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  // Battle and trainer XP. The reading credit counts its own level-ups.
+  if (currentLevel > previousLevel && !extrasCreditActive_) {
+    applyExtrasQuestEvent([](extras::ExtrasState& extrasState, bool) { return extras::recordQuestLevelUp(extrasState); },
+                          false);
+  }
+#endif
   if (currentLevel > previousLevel && ownStats != nullptr) {
     const IvEvEntry ivEvAfter = ensureIvEv(recordId);
     raiseCurrentHpByMaxHpGain(recordId, oldMaxHp,
@@ -1688,7 +1710,7 @@ bool PokemonService::creditMinutes(const uint16_t minutes, const uint8_t bookPro
   }
   healPartyOnRead(state, minutes, previousMinuteRemainder);
 #if defined(CROSSINK_POKEMON_EXTRAS)
-  applyExtrasAfterCredit(minutes, bookProgressPercent);
+  applyExtrasAfterCredit(minutes, bookProgressPercent, lifetimeMinutesBefore, result.previousLevel);
 #endif
   return true;
 }

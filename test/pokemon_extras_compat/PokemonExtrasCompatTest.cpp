@@ -29,6 +29,8 @@
 #include <vector>
 
 #include "PokemonExtras.h"
+#include "PokemonExtrasEggs.h"
+#include "PokemonExtrasQuests.h"
 #include "PokemonExtrasRules.h"
 #include "PokemonStoreCodec.h"
 #include "pokemon/PokemonBattleStore.h"
@@ -369,6 +371,252 @@ void runM2Operations(const bool fixture) {
   CHECK(reader.state() == extrasStore.state());
 }
 
+// What the daily quests see in place of the firmware's clock.
+pokemon::extras::QuestClock testClock{};
+pokemon::extras::QuestClock testClockSource() { return testClock; }
+
+std::vector<uint8_t> extrasFileBytes() {
+  std::vector<uint8_t> bytes;
+  for (const char* path : EXTRAS_PATHS) {
+    const std::vector<uint8_t> file = readStub(path);
+    bytes.insert(bytes.end(), file.begin(), file.end());
+    bytes.push_back(0xFF);  // separator: a file that moved between slots differs
+  }
+  return bytes;
+}
+
+// The first day whose set the service can finish without a trainer, a catch
+// or an egg: one reading quest, a wild win and a level-up.
+uint32_t questDayWithoutCatches() {
+  using pokemon::extras::QuestKind;
+  for (uint32_t day = 20000; day < 60000; ++day) {
+    const auto set = pokemon::extras::chooseQuestSet(pokemon::extras::questSeedForDay(day), false);
+    bool ok = true;
+    for (const QuestKind kind : set) {
+      ok = ok && (pokemon::extras::isReadingQuest(kind) || kind == QuestKind::WinWild || kind == QuestKind::LevelUp);
+    }
+    if (ok) return day;
+  }
+  return 0;
+}
+
+uint32_t bagTotal(const pokemon::PokemonState& state) {
+  uint32_t total = 0;
+  for (const uint8_t count : state.bagCounts) total += count;
+  return total;
+}
+
+// M3 (docs/extras/M3-HOOKS.md section 8): find an egg, count it down, hatch
+// it through the service, a crash between the hatch's commits 1-2 and 2-3
+// (one record per egg either way), a finished quest set and its rewards, a
+// rotation that grants a ready reward, and every toggle off writing nothing.
+void runM3Operations(const bool fixture) {
+  using pokemon::ServiceStatus;
+  using pokemon::extras::Feature;
+  namespace extras = pokemon::extras;
+
+  pokemon::PokemonExtrasStore& extrasStore = pokemon::devicePokemonExtrasStore();
+  extrasStore.load();
+  for (uint8_t index = 0; index < extras::FEATURE_COUNT; ++index) {
+    CHECK(extrasStore.setFeatureEnabled(static_cast<Feature>(index), false));
+  }
+  CHECK(extrasStore.setFeatureEnabled(Feature::Eggs, true));
+  pokemon::setExtrasQuestClockSource(testClockSource);
+  testClock = {};
+
+  pokemon::PokemonStore store;
+  pokemon::PokemonBattleStore battleStore;
+  pokemon::PokemonIvEvStore ivEvStore;
+  pokemon::PokemonHallOfFameStore hallOfFameStore;
+  pokemon::PokemonService service(store, battleStore, ivEvStore, hallOfFameStore, {nullptr, zeroRandom});
+  pokemon::PokemonSnapshot snapshot{};
+  CHECK(service.loadSnapshot(snapshot) == ServiceStatus::Ok);
+  if (snapshot.partyCount == 0) return;
+  const auto stateNow = [&] {
+    pokemon::PokemonSnapshot current{};
+    CHECK(service.loadSnapshot(current) == ServiceStatus::Ok);
+    return current.state;
+  };
+  const auto countSpecies = [&](const uint16_t speciesId) {
+    // Every record of a species, Party and PC Box.
+    size_t count = 0;
+    std::array<pokemon::PokemonRecord, 16> page{};
+    for (size_t offset = 0;; offset += page.size()) {
+      size_t got = 0;
+      if (service.readPcPage(pokemon::PcOrder::CatchDate, offset, page, got) != ServiceStatus::Ok) break;
+      for (size_t index = 0; index < got; ++index) count += page[index].speciesId == speciesId ? 1 : 0;
+      if (got < page.size()) break;
+    }
+    const pokemon::PokemonState state = stateNow();
+    for (const uint32_t recordId : state.partyRecordIds) {
+      pokemon::PokemonRecord record{};
+      if (recordId != 0 && service.readRecord(recordId, record) == ServiceStatus::Ok && record.speciesId == speciesId) {
+        ++count;
+      }
+    }
+    return count;
+  };
+
+  // --- Egg find: one roll per hour of reading, at most 4 hours to a find.
+  const size_t recordsBefore = store.recordCount();
+  for (int hour = 0; hour < 4 && !extras::hasEgg(extrasStore.state()); ++hour) CHECK(service.creditMinutes(60, 40));
+  CHECK(extras::hasEgg(extrasStore.state()));
+  CHECK(store.recordCount() == recordsBefore);  // a find touches extras only
+  const uint16_t eggSpecies = extrasStore.state().eggSpeciesId;
+  CHECK(extras::isEggPoolSpecies(eggSpecies));
+  CHECK(extrasStore.state().eggPagesRemaining == extras::eggTotalPages(eggSpecies));
+  std::printf("  egg: found species %u, %u pages\n", static_cast<unsigned>(eggSpecies),
+              static_cast<unsigned>(extrasStore.state().eggPagesRemaining));
+  checkMainSave();
+
+  // --- Pages: RAM only until the next credit, then counted.
+  CHECK(service.beginReadingSession());
+  const std::vector<uint8_t> extrasBeforePages = extrasFileBytes();
+  for (int page = 0; page < 50; ++page) service.countExtrasEggPage();
+  CHECK(extrasFileBytes() == extrasBeforePages);  // no SD write per page
+  const uint16_t pagesBefore = extrasStore.state().eggPagesRemaining;
+  CHECK(service.creditMinutes(1, 40));
+  CHECK(extrasStore.state().eggPagesRemaining == pagesBefore - 50);
+  const uint16_t left = extrasStore.state().eggPagesRemaining;
+  for (uint16_t page = 0; page < left + 5U; ++page) service.countExtrasEggPage();
+  CHECK(service.creditMinutes(1, 40));
+  CHECK(extras::isEggReadyToHatch(extrasStore.state()));
+  service.flushOnExit(0);
+
+  // --- Crash between commit 1 (intent) and 2 (main save): the next extras use
+  // drops the intent and the egg hatches once.
+  const auto speciesBefore = countSpecies(eggSpecies);
+  {
+    extras::ExtrasState intent = extrasStore.state();
+    CHECK(extras::beginHatch(intent, store.nextRecordId()));
+    CHECK(extrasStore.commit(intent));
+  }
+  extrasStore.load();  // reboot
+  uint32_t hatchedId = 0;
+  uint16_t hatchedSpecies = 0;
+  const ServiceStatus hatch = service.hatchReadyEgg(hatchedId, hatchedSpecies);
+  if (!fixture && hatch == ServiceStatus::BoxFull) {
+    std::printf("  hatch: Party and PC Box full, the egg waits (as designed)\n");
+    CHECK(extras::isEggReadyToHatch(extrasStore.state()));
+  } else {
+    CHECK(hatch == ServiceStatus::Ok);
+    CHECK(hatchedSpecies == eggSpecies && hatchedId != 0);
+    CHECK(countSpecies(eggSpecies) == speciesBefore + 1);
+    CHECK(!extras::hasEgg(extrasStore.state()) && extrasStore.state().pendingHatchRecordId == 0);
+    pokemon::PokemonRecord hatched{};
+    CHECK(service.readRecord(hatchedId, hatched) == ServiceStatus::Ok);
+    CHECK(hatched.origin == pokemon::Origin::Caught);
+    CHECK(pokemon::levelForXp(hatched.totalXp) == extras::EGG_HATCH_LEVEL);
+    CHECK(pokemon::isSpeciesMarked(stateNow().caughtSpecies, eggSpecies));
+    const pokemon::IvEvEntry ivEv = service.peekIvEv(hatchedId);
+    CHECK(ivEv.recordId == hatchedId);
+    for (const uint8_t iv : ivEv.iv) CHECK(iv >= extras::EGG_IV_FLOOR && iv <= extras::EGG_IV_MAX);
+    std::printf("  hatch: record %lu, species %u, after a crash between commits 1 and 2\n",
+                static_cast<unsigned long>(hatchedId), static_cast<unsigned>(hatchedSpecies));
+    checkMainSave();
+
+    // --- Crash between commit 2 (main save) and 3 (egg cleared): the next
+    // extras use finds the record and clears the egg; no second record.
+    extras::ExtrasState egg = extrasStore.state();
+    egg.eggSpeciesId = eggSpecies;
+    egg.eggPagesRemaining = 0;
+    egg.eggFlags = 0;
+    CHECK(extrasStore.commit(egg));
+    const auto speciesMid = countSpecies(eggSpecies);
+    const uint32_t newId = store.nextRecordId();
+    CHECK(extras::beginHatch(egg, newId));
+    CHECK(extrasStore.commit(egg));
+    pokemon::PokemonState state = stateNow();
+    pokemon::RecordMutation mutation{};
+    CHECK(extras::buildHatchedRecord(egg, state, newId, pokemon::Gender::Female, "", mutation));
+    CHECK(store.commit(state, mutation));
+    extrasStore.load();  // reboot
+    CHECK(service.hatchReadyEgg(hatchedId, hatchedSpecies) == ServiceStatus::NotApplicable);
+    CHECK(!extras::hasEgg(extrasStore.state()) && extrasStore.state().pendingHatchRecordId == 0);
+    CHECK(countSpecies(eggSpecies) == speciesMid + 1);
+    std::printf("  hatch: a crash between commits 2 and 3 left one record (%lu)\n", static_cast<unsigned long>(newId));
+    checkMainSave();
+  }
+
+  // --- Daily quests: a set the service can finish, finished and claimed.
+  const uint32_t day = questDayWithoutCatches();
+  CHECK(day != 0);
+  CHECK(extrasStore.setFeatureEnabled(Feature::DailyQuests, true));
+  testClock = {true, day};
+  CHECK(service.refreshDailyQuests() == ServiceStatus::Ok);
+  CHECK(extrasStore.state().questDayAnchor == day);
+  uint16_t readTarget = 0;
+  for (uint8_t slot = 0; slot < extras::DAILY_QUEST_SLOTS; ++slot) {
+    const extras::QuestKind kind = extras::questKindAt(extrasStore.state(), slot);
+    if (extras::isReadingQuest(kind)) readTarget = extras::questTarget(kind);
+  }
+  CHECK(readTarget > 0);
+  CHECK(service.creditMinutes(readTarget, 40));
+  service.noteWildBattleWon();
+  // A battle-style level-up for a Party member below 100.
+  pokemon::PokemonState state = stateNow();
+  for (const uint32_t recordId : state.partyRecordIds) {
+    pokemon::PokemonRecord record{};
+    if (recordId == 0 || service.readRecord(recordId, record) != ServiceStatus::Ok) continue;
+    const uint8_t level = pokemon::levelForXp(record.totalXp);
+    if (level >= 100) continue;
+    CHECK(service.awardFixedXp(recordId, pokemon::xpRequired(level + 1U) - record.totalXp) == ServiceStatus::Ok);
+    break;
+  }
+  CHECK(extras::questRewardsReadyMask(extrasStore.state()) == (extras::QUEST_SLOT_MASK | extras::QUEST_BONUS_BIT));
+  const uint32_t bagBefore = bagTotal(stateNow());
+  extras::QuestRewards granted{};
+  CHECK(service.claimQuestRewards(granted) == ServiceStatus::Ok);
+  CHECK(granted.count == 4);
+  CHECK(granted.itemIds[3] == extras::QUEST_BONUS_ITEM);
+  if (fixture) CHECK(bagTotal(stateNow()) == bagBefore + 4U);
+  std::printf("  quests: day %lu finished, claimed %u items (bag %lu -> %lu)\n", static_cast<unsigned long>(day),
+              static_cast<unsigned>(granted.count), static_cast<unsigned long>(bagBefore),
+              static_cast<unsigned long>(bagTotal(stateNow())));
+  CHECK(extras::questRewardsReadyMask(extrasStore.state()) == 0);
+  CHECK(service.claimQuestRewards(granted) == ServiceStatus::NotApplicable);  // never twice
+  checkMainSave();
+
+  // --- Rotation: tomorrow's set; a ready reward of today's set is granted.
+  testClock = {true, day + 1};
+  CHECK(service.refreshDailyQuests() == ServiceStatus::Ok);
+  CHECK(extrasStore.state().questDayAnchor == day + 1);
+  // A reward taken in extras whose bag write never happened (a crash between
+  // the two commits) is lost, never given twice.
+  {
+    extras::ExtrasState taken = extrasStore.state();
+    taken.questDoneMask = 0x01;
+    CHECK(extrasStore.commit(taken));
+    const uint32_t bagMid = bagTotal(stateNow());
+    extras::ExtrasState afterTake = extrasStore.state();
+    CHECK(extras::takeQuestRewards(afterTake).count == 1);
+    CHECK(extrasStore.commit(afterTake));
+    extrasStore.load();  // reboot before the bag write
+    CHECK(service.claimQuestRewards(granted) == ServiceStatus::NotApplicable);
+    CHECK(bagTotal(stateNow()) == bagMid);
+  }
+  checkMainSave();
+
+  // --- Every toggle off: reading, page turns and battle events write no extras.
+  for (uint8_t index = 0; index < extras::FEATURE_COUNT; ++index) {
+    CHECK(extrasStore.setFeatureEnabled(static_cast<Feature>(index), false));
+  }
+  const std::vector<uint8_t> extrasOff = extrasFileBytes();
+  CHECK(service.beginReadingSession());
+  for (int page = 0; page < 20; ++page) service.countExtrasEggPage();
+  CHECK(service.creditMinutes(61, 40));
+  service.noteWildBattleWon();
+  CHECK(service.refreshDailyQuests() == ServiceStatus::NotApplicable);
+  CHECK(service.hatchReadyEgg(hatchedId, hatchedSpecies) == ServiceStatus::NotApplicable);
+  service.flushOnExit(0);
+  CHECK(extrasFileBytes() == extrasOff);
+  checkMainSave();
+
+  pokemon::setExtrasQuestClockSource(nullptr);
+  pokemon::PokemonExtrasStore reader(fixedEntropy);
+  CHECK(reader.state() == extrasStore.state());
+}
+
 // Every extras operation there is so far, with the main save checked after each group.
 void runExtrasOperations(const bool fixture) {
   checkMainSave();
@@ -410,6 +658,7 @@ void runExtrasOperations(const bool fixture) {
   checkMainSave();
 
   runM2Operations(fixture);
+  runM3Operations(fixture);
 
   // Deleting the extras files changes nothing else.
   const auto withExtras = snapshotUpstreamFiles();
