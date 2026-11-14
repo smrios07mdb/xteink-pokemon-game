@@ -2,8 +2,7 @@
 # extras files; reuses that test's generated species/moves/... headers.
 set(POKEMON_EXTRAS_COMPAT_GENERATED_DIR "${CMAKE_BINARY_DIR}/pokemon_service/generated")
 
-add_executable(PokemonExtrasCompatTest
-  PokemonExtrasCompatTest.cpp
+set(POKEMON_EXTRAS_COMPAT_SOURCES
   ${REPO_ROOT}/lib/Pokemon/PokemonTypes.cpp
   ${REPO_ROOT}/lib/Pokemon/PokemonSpecies.cpp
   ${REPO_ROOT}/lib/Pokemon/PokemonGame.cpp
@@ -35,6 +34,8 @@ add_executable(PokemonExtrasCompatTest
   ${REPO_ROOT}/src/pokemon/PokemonExtrasHooks.cpp
   ${REPO_ROOT}/src/pokemon/PokemonServiceExtras.cpp
 )
+
+add_executable(PokemonExtrasCompatTest PokemonExtrasCompatTest.cpp ${POKEMON_EXTRAS_COMPAT_SOURCES})
 add_dependencies(PokemonExtrasCompatTest PokemonServiceTest)
 
 target_include_directories(PokemonExtrasCompatTest PRIVATE
@@ -54,3 +55,18 @@ target_link_libraries(PokemonExtrasCompatTest PRIVATE
 )
 
 add_test(NAME PokemonExtrasCompatTest COMMAND PokemonExtrasCompatTest)
+
+# Milestone gate helper, not a test (see the header of the .cpp).
+add_executable(PokemonExtrasGateDump PokemonExtrasGateDump.cpp ${POKEMON_EXTRAS_COMPAT_SOURCES})
+add_dependencies(PokemonExtrasGateDump PokemonServiceTest)
+target_include_directories(PokemonExtrasGateDump PRIVATE
+  "${REPO_ROOT}/test/pokemon_store/stubs"
+  "${POKEMON_EXTRAS_COMPAT_GENERATED_DIR}"
+  "${REPO_ROOT}/src"
+)
+target_compile_definitions(PokemonExtrasGateDump PRIVATE
+  CROSSINK_ENABLE_POKEMON=1
+  CROSSINK_POKEMON_EXTRAS=1
+  POKEMON_SERVICE_HOST_TEST=1
+)
+target_link_libraries(PokemonExtrasGateDump PRIVATE crosspoint_test_common)

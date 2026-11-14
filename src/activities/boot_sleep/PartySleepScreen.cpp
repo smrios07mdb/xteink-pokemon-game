@@ -26,9 +26,9 @@
 namespace pokemon {
 namespace {
 
-// Hero art is drawn 4:3 everywhere else (120x90 on the event screens); the
-// layout hands out a square box, so the art takes its full width.
-constexpr int PREFERRED_ART_SIZE = 240;
+// Hero art is 120x90 and is never scaled up; the layout hands out a square
+// box, so the art takes its full width and sits in the middle of its height.
+constexpr int PREFERRED_ART_SIZE = 120;
 
 // The lead Pokemon, read without creating or changing any file. A local
 // store: the device's shared one may not be open yet, and opening it with
