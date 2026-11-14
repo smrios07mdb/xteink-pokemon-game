@@ -24,6 +24,9 @@
 #include "components/icons/touchHeaderIcons.h"
 #include "components/pokemon/PokemonArt.h"
 #include "fontIds.h"
+#if defined(CROSSINK_POKEMON_EXTRAS)
+#include "pokemon/PokemonExtrasStore.h"
+#endif
 
 namespace fui = freeink::ui;
 
@@ -71,6 +74,40 @@ const char* settingsActionLabel(const int index) {
          : index == SETTINGS_TOGGLE_COUNT + 1 ? tr(STR_POKEMON_RECEIVE_SAVE)
                                               : tr(STR_POKEMON_RESET);
 }
+
+#if defined(CROSSINK_POKEMON_EXTRAS)
+// Extras (docs/extras/PLAN.md): the last Screen::Settings row opens
+// Screen::Extras, one toggle row per extras::Feature, saved in the extras file.
+constexpr int SETTINGS_EXTRAS_ROW = SETTINGS_TOGGLE_COUNT + 3;
+
+const char* extrasFeatureLabel(const int index) {
+  switch (static_cast<pokemon::extras::Feature>(index)) {
+    case pokemon::extras::Feature::Eggs:
+      return tr(STR_POKEMON_EXTRAS_EGGS);
+    case pokemon::extras::Feature::Streaks:
+      return tr(STR_POKEMON_EXTRAS_STREAKS);
+    case pokemon::extras::Feature::BookBoss:
+      return tr(STR_POKEMON_EXTRAS_BOOK_BOSS);
+    case pokemon::extras::Feature::KindleCredit:
+      return tr(STR_POKEMON_EXTRAS_KINDLE_CREDIT);
+    case pokemon::extras::Feature::PostGame:
+      return tr(STR_POKEMON_EXTRAS_POST_GAME);
+    case pokemon::extras::Feature::DayCare:
+      return tr(STR_POKEMON_EXTRAS_DAY_CARE);
+    case pokemon::extras::Feature::DailyQuests:
+      return tr(STR_POKEMON_EXTRAS_DAILY_QUESTS);
+    case pokemon::extras::Feature::PartySleepScreen:
+      return tr(STR_POKEMON_EXTRAS_PARTY_SLEEP_SCREEN);
+  }
+  return "";
+}
+
+const char* extrasFeatureValue(const int index) {
+  return pokemon::devicePokemonExtrasStore().isFeatureEnabled(static_cast<pokemon::extras::Feature>(index))
+             ? tr(STR_POKEMON_ON)
+             : tr(STR_POKEMON_OFF);
+}
+#endif
 
 // A trainer class's name (trainers met while reading), translated.
 const char* trainerClassName(const uint8_t classId) {
@@ -914,6 +951,9 @@ bool PokemonActivity::isChoiceButtonScreen() const {
     case Screen::EvolveConfirm:
     case Screen::Event:
     case Screen::Settings:
+#if defined(CROSSINK_POKEMON_EXTRAS)
+    case Screen::Extras:
+#endif
     case Screen::Actions:
     case Screen::Moveset:
     case Screen::MovesetPick:
@@ -934,6 +974,9 @@ bool PokemonActivity::isChoiceButtonScreen() const {
 // other choice screen is a 2-column grid like the main menu.
 int PokemonActivity::choiceColumns() const {
   if (screen_ == Screen::Settings || screen_ == Screen::Message) return 1;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  if (screen_ == Screen::Extras) return 1;
+#endif
   if (screen_ == Screen::Event) {
     const pokemon::PendingEvent* pending = pokemon::pendingEventFront(snapshot_.state);
     if (pending == nullptr || pending->kind == pokemon::PendingEventKind::Item) return 1;
@@ -1065,6 +1108,11 @@ int PokemonActivity::logicalCount() const {
     case Screen::Menu:
       return 8;
     case Screen::Settings:
+#if defined(CROSSINK_POKEMON_EXTRAS)
+      return SETTINGS_EXTRAS_ROW + 1;
+    case Screen::Extras:
+      return pokemon::extras::FEATURE_COUNT;
+#endif
       return SETTINGS_TOGGLE_COUNT + 3;
     case Screen::Party:
       return pokemon::PARTY_SIZE;
@@ -2359,7 +2407,24 @@ void PokemonActivity::activate() {
       else
         setScreen(Screen::Settings);
       return;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+    case Screen::Extras: {
+      const auto feature = static_cast<pokemon::extras::Feature>(selected_);
+      auto& extrasStore = pokemon::devicePokemonExtrasStore();
+      if (!extrasStore.setFeatureEnabled(feature, !extrasStore.isFeatureEnabled(feature)))
+        showMessage(tr(STR_POKEMON_SAVE_ERROR), Screen::Extras);
+      else
+        setScreen(Screen::Extras, selected_);
+      return;
+    }
+#endif
     case Screen::Settings:
+#if defined(CROSSINK_POKEMON_EXTRAS)
+      if (selected_ == SETTINGS_EXTRAS_ROW) {
+        setScreen(Screen::Extras);
+        return;
+      }
+#endif
       if (selected_ < SETTINGS_TOGGLE_COUNT) {
         uint8_t& value = settingsToggleValue(selected_);
         const uint8_t previous = value;
@@ -3262,6 +3327,11 @@ void PokemonActivity::goBack() {
     case Screen::ResetFinal:
       setScreen(Screen::Settings);
       return;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+    case Screen::Extras:
+      setScreen(Screen::Settings, SETTINGS_EXTRAS_ROW);
+      return;
+#endif
     case Screen::PcReleaseConfirm:
     case Screen::EvolveConfirm:
       setScreen(Screen::Actions);
@@ -3674,7 +3744,18 @@ void PokemonActivity::buildRows() {
                    : index == 6 ? tr(STR_POKEMON_TRAINER_CARD)
                                 : tr(STR_POKEMON_SETTINGS));
         break;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+      case Screen::Extras:
+        row(local, extrasFeatureLabel(index), extrasFeatureValue(index));
+        break;
+#endif
       case Screen::Settings:
+#if defined(CROSSINK_POKEMON_EXTRAS)
+        if (index == SETTINGS_EXTRAS_ROW) {
+          row(local, tr(STR_POKEMON_EXTRAS));
+          break;
+        }
+#endif
         if (index < SETTINGS_TOGGLE_COUNT) {
           row(local, settingsToggleLabel(index),
               settingsToggleValue(index) != 0 ? tr(STR_POKEMON_ON) : tr(STR_POKEMON_OFF));
@@ -5190,7 +5271,19 @@ void PokemonActivity::renderChoiceButtons() {
       case Screen::EvolveConfirm:
         label = index == 0 ? tr(STR_YES) : tr(STR_NO);
         break;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+      case Screen::Extras:
+        snprintf(combined, sizeof(combined), "%s: %s", extrasFeatureLabel(index), extrasFeatureValue(index));
+        label = combined;
+        break;
+#endif
       case Screen::Settings:
+#if defined(CROSSINK_POKEMON_EXTRAS)
+        if (index == SETTINGS_EXTRAS_ROW) {
+          label = tr(STR_POKEMON_EXTRAS);
+          break;
+        }
+#endif
         if (index < SETTINGS_TOGGLE_COUNT) {
           snprintf(combined, sizeof(combined), "%s: %s", settingsToggleLabel(index),
                    settingsToggleValue(index) != 0 ? tr(STR_POKEMON_ON) : tr(STR_POKEMON_OFF));
@@ -6000,6 +6093,10 @@ void PokemonActivity::renderHeaderAndHints() {
     title = tr(STR_POKEMON_HALL_OF_FAME);
   else if (screen_ == Screen::Settings || screen_ == Screen::ResetFirst || screen_ == Screen::ResetFinal)
     title = tr(STR_POKEMON_SETTINGS);
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  else if (screen_ == Screen::Extras)
+    title = tr(STR_POKEMON_EXTRAS);
+#endif
   else if (screen_ == Screen::PcReleaseConfirm)
     title = tr(STR_POKEMON_PC_BOX);
   else if (screen_ == Screen::EvolveConfirm)

@@ -1,0 +1,90 @@
+name: Extras checks
+
+# docs/extras/SAVE-SAFETY.md: the extras tests (R10 compat test included) and
+# one flag-off simulator build (R11) on every PR into `extras` and every push
+# to it. Builds no firmware and publishes nothing.
+on:
+  pull_request:
+    branches: [extras]
+  push:
+    branches: [extras]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extras-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  extras-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Generate i18n headers
+        run: python3 scripts/gen_i18n.py lib/I18n/translations lib/I18n/
+
+      - name: Configure host tests
+        run: cmake -S test -B build-tests -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build extras tests
+        run: >
+          cmake --build build-tests -j "$(nproc)" --target
+          PokemonExtrasTest PokemonExtrasCodecTest PokemonExtrasStoreTest PokemonExtrasCompatTest
+
+      - name: Run extras tests
+        run: |
+          set -euo pipefail
+          build-tests/pokemon_extras/PokemonExtrasTest
+          build-tests/pokemon_extras/PokemonExtrasCodecTest
+          build-tests/pokemon_extras_store/PokemonExtrasStoreTest
+          build-tests/pokemon_extras_compat/PokemonExtrasCompatTest
+
+  flag-off-simulator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Install simulator dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libsdl2-dev libexpat1-dev zlib1g-dev libssl-dev libwolfssl-dev
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: ${{ runner.os }}-platformio-py3.14-core6.1.19-extras-simulator-${{ hashFiles('platformio.ini') }}
+
+      - name: Install PlatformIO Core
+        run: uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+
+      - name: Build pokemon-x4-pro-simulator without CROSSINK_POKEMON_EXTRAS
+        run: pio run -e pokemon-x4-pro-simulator-noextras
+
+      - name: Prove no extras code was compiled in
+        run: |
+          set -euo pipefail
+          program=.pio/build/pokemon-x4-pro-simulator-noextras/program
+          test -s "$program"
+          if nm -C "$program" | grep -E 'pokemon::extras::|PokemonExtrasStore'; then
+            echo "Extras symbols found in a flag-off build" >&2
+            exit 1
+          fi
+          echo "No extras symbols in the flag-off simulator."

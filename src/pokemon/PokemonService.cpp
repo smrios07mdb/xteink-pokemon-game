@@ -10,6 +10,9 @@
 #include <limits>
 
 #include "PokemonSaveTransfer.h"
+#if defined(CROSSINK_POKEMON_EXTRAS)
+#include "PokemonExtrasStore.h"
+#endif
 
 #if !defined(POKEMON_SERVICE_HOST_TEST)
 #include <Arduino.h>
@@ -1559,6 +1562,10 @@ ServiceStatus PokemonService::reset() {
   if (!hallOfFameStore_.reset()) {
     LOG_ERR("PokemonService", "Failed to reset Pokemon Hall of Fame store");
   }
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  // Extras after the main save (docs/extras/SAVE-SAFETY.md R6), best effort (R5).
+  if (!devicePokemonExtrasStore().resetProgress()) LOG_ERR("PokemonService", "Failed to reset Pokemon extras store");
+#endif
   return ServiceStatus::Ok;
 }
 
