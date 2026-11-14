@@ -86,3 +86,36 @@ target_include_directories(PokemonExtrasQuestsTest PRIVATE
 target_compile_definitions(PokemonExtrasQuestsTest PRIVATE CROSSINK_POKEMON_EXTRAS=1)
 target_link_libraries(PokemonExtrasQuestsTest PRIVATE crosspoint_test_common)
 add_test(NAME PokemonExtrasQuestsTest COMMAND PokemonExtrasQuestsTest)
+
+# M4 rules: Kindle credit (05-kindle-credit.md) and the book-finish boss
+# (03-book-boss.md). Kindle credit needs no species data.
+add_executable(PokemonExtrasKindleTest
+  PokemonExtrasKindleTest.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonExtras.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonExtrasKindle.cpp
+)
+target_include_directories(PokemonExtrasKindleTest PRIVATE "${REPO_ROOT}/lib/Pokemon")
+target_compile_definitions(PokemonExtrasKindleTest PRIVATE CROSSINK_POKEMON_EXTRAS=1)
+target_link_libraries(PokemonExtrasKindleTest PRIVATE crosspoint_test_common)
+add_test(NAME PokemonExtrasKindleTest COMMAND PokemonExtrasKindleTest)
+
+add_executable(PokemonExtrasBossTest
+  PokemonExtrasBossTest.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonExtras.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonExtrasBoss.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonExtrasKindle.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonExtrasQuests.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonExtrasRules.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonTypes.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonSpecies.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonItemData.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonGame.cpp
+)
+add_dependencies(PokemonExtrasBossTest PokemonGameTest)
+target_include_directories(PokemonExtrasBossTest PRIVATE
+  "${REPO_ROOT}/lib/Pokemon"
+  "${POKEMON_EXTRAS_RULES_GENERATED_DIR}"
+)
+target_compile_definitions(PokemonExtrasBossTest PRIVATE CROSSINK_POKEMON_EXTRAS=1)
+target_link_libraries(PokemonExtrasBossTest PRIVATE crosspoint_test_common)
+add_test(NAME PokemonExtrasBossTest COMMAND PokemonExtrasBossTest)

@@ -11,10 +11,11 @@ wild encounters, trainers, item finds, healing, egg progress, quest progress, Ba
 
 ## Rules
 - Trigger: a synced remote position is applied and it is ahead of the local position by more than
-  0.1 percentage points.
+  0.1 percentage points (as built: 2 per mille or more, positions floored to per mille).
 - Pages = forward delta (fraction of book) x the book's page count.
 - Minutes = pages x this reader's own average minutes per page (firmware reading stats, read-only;
-  prefer the book's `avgSecondsPerForwardPage`, else the global totals, else 1.0).
+  prefer the book's `avgSecondsPerForwardPage`, else the global totals, else 1.0). A measured pace
+  is clamped to 10..300 seconds a page.
 - Credit those minutes through the normal reading path, `PokemonService::creditMinutes(minutes,
   bookProgressPercent)`, at 100%. No separate rate, no daily cap.
 - Pages also count toward the egg (feature 1).

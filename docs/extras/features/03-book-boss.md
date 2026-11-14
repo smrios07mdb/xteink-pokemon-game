@@ -10,13 +10,17 @@
 - Each book rewards once, ever. Un-marking and re-marking does nothing.
 - Anti-farm: the book needs at least 60 minutes of recorded reading time on this device
   (`BookReadingStats::totalReadingSeconds`, read-only). Below that, only the ribbon count rises.
+  With Kindle credit on, a book whose high-water mark (feature 5) is at 80% or more also qualifies,
+  so a book read mostly on the Kindle still earns its boss (chat, 2026-11-14).
 - Boss choice, first match wins:
   1. an uncaught legendary bird (144, 145, 146)
   2. Mewtwo (150) if uncaught
   3. otherwise a rare species (Dragonite, Snorlax, Lapras, Gyarados, Alakazam...) at leader level + 5
 - Reward item alongside: one Master Ball if a bag item for it exists, else three Ultra Balls
   (Claude Code: check the item table; `BallKind::Master` exists in `PokemonBattle.h`).
-- Queue full: the boss is held in extras and queued at the next checkpoint.
+- Queue full: the boss is held in extras and queued at the next checkpoint. One boss is held at a
+  time: a second qualifying book finished meanwhile is counted but brings no second boss.
+- Every boss appears at the lead's level + 5. Several uncaught birds: one at random.
 
 ## State
 `rewardedBookCount u16`, `rewardedBookHashes[128] u32` (FNV-1a of the book's stable id; when full,

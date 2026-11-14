@@ -34,6 +34,7 @@ jobs:
           cmake --build build-tests -j "$(nproc)" --target
           PokemonExtrasTest PokemonExtrasCodecTest PokemonExtrasRulesTest PokemonExtrasLayoutTest
           PokemonExtrasEggsTest PokemonExtrasQuestsTest
+          PokemonExtrasKindleTest PokemonExtrasBossTest
           PokemonExtrasStoreTest PokemonExtrasCompatTest
 
       - name: Run extras tests
@@ -45,6 +46,8 @@ jobs:
           build-tests/pokemon_extras/PokemonExtrasLayoutTest
           build-tests/pokemon_extras/PokemonExtrasEggsTest
           build-tests/pokemon_extras/PokemonExtrasQuestsTest
+          build-tests/pokemon_extras/PokemonExtrasKindleTest
+          build-tests/pokemon_extras/PokemonExtrasBossTest
           build-tests/pokemon_extras_store/PokemonExtrasStoreTest
           build-tests/pokemon_extras_compat/PokemonExtrasCompatTest
 
