@@ -25,6 +25,13 @@ enum class PcOrder : uint8_t {
 class PokemonStore {
  public:
   StoreBeginResult begin();
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  // Extras (Party sleep screen): opens the save for reading only. Unlike
+  // begin() it never creates the data directory and never renames a legacy
+  // save file, and commit()/reset() stay refused afterwards. Meant for a
+  // short-lived local PokemonStore, not the device's shared one.
+  StoreBeginResult beginReadOnly();
+#endif
   bool isReady() const { return ready_; }
   uint32_t recordCount() const { return ready_ ? activeHeader_.recordCount : 0; }
   // The id a newly-created record should use. NOT recordCount() + 1 - once a

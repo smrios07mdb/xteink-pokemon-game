@@ -84,6 +84,11 @@ enum class CollectionAction : uint8_t {
   // Box context only (collectionActions()'s !party branch) - permanently
   // deletes the Pokemon, see releaseRecord().
   Release = 7,
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  // Extras Day Care (PC Box): send or take back. Added by the Pokemon screen
+  // after collectionActions(), which never emits it. Not persisted anywhere.
+  DayCare = 9,
+#endif
 };
 
 struct CollectionActionSet {

@@ -25,6 +25,7 @@
 #include "components/pokemon/PokemonArt.h"
 #include "fontIds.h"
 #if defined(CROSSINK_POKEMON_EXTRAS)
+#include "pokemon/PokemonExtrasHooks.h"
 #include "pokemon/PokemonExtrasStore.h"
 #endif
 
@@ -320,6 +321,11 @@ const char* collectionActionLabel(const pokemon::CollectionAction action) {
     case pokemon::CollectionAction::EvolutionPrompts:
       label = tr(STR_POKEMON_EVOLUTIONS);
       break;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+    case pokemon::CollectionAction::DayCare:
+      label = tr(STR_POKEMON_DAY_CARE_SEND);  // "Take" is chosen in PokemonActivity::actionLabel()
+      break;
+#endif
   }
   return label;
 }
@@ -921,6 +927,9 @@ void PokemonActivity::setScreen(const Screen screen, const int selected) {
   itemPanelOpen_ = false;
   itemPanelChoice_ = 0;
   uiReady_ = false;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  refreshExtrasLine(screen);
+#endif
   app_.setScreen(&PokemonActivity::screenBuilder, this);
   requestUpdate();
 }
@@ -1117,7 +1126,7 @@ int PokemonActivity::logicalCount() const {
     case Screen::Party:
       return pokemon::PARTY_SIZE;
     case Screen::Actions: {
-      const auto actions = pokemon::collectionActions(actionSource_ == Screen::Party, snapshot_.partyCount, canEvolveFocused());
+      const auto actions = focusedActions();
       return actions.count;
     }
     case Screen::Moveset:
@@ -1215,6 +1224,65 @@ int PokemonActivity::listTop() const {
 bool PokemonActivity::canEvolveFocused() const {
   return focusedRecord_.recordId != 0 && pokemon::levelEvolutionAvailable(focusedRecord_) != nullptr;
 }
+
+pokemon::CollectionActionSet PokemonActivity::focusedActions() const {
+  pokemon::CollectionActionSet actions =
+      pokemon::collectionActions(actionSource_ == Screen::Party, snapshot_.partyCount, canEvolveFocused());
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  // Day Care (docs/extras/features/07-day-care.md): a boxed Pokemon only.
+  // "Send" needs the feature on and the slot empty; "Take" is offered on the
+  // Pokemon that is there even with the feature off, so the slot can always
+  // be emptied. Last in the list: upstream's buttons keep their places.
+  if (actionSource_ != Screen::Party && focusedRecordId_ != 0 && actions.count < actions.items.size()) {
+    auto& extrasStore = pokemon::devicePokemonExtrasStore();
+    const uint32_t resident = extrasStore.state().dayCareRecordId;
+    if (resident == focusedRecordId_ ||
+        (resident == 0 && extrasStore.isFeatureEnabled(pokemon::extras::Feature::DayCare))) {
+      actions.items[actions.count++] = pokemon::CollectionAction::DayCare;
+    }
+  }
+#endif
+  return actions;
+}
+
+const char* PokemonActivity::actionLabel(const pokemon::CollectionAction action) const {
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  if (action == pokemon::CollectionAction::DayCare && focusedRecordId_ != 0 &&
+      pokemon::devicePokemonExtrasStore().state().dayCareRecordId == focusedRecordId_) {
+    return tr(STR_POKEMON_DAY_CARE_TAKE);
+  }
+#endif
+  return collectionActionLabel(action);
+}
+
+#if defined(CROSSINK_POKEMON_EXTRAS)
+void PokemonActivity::refreshExtrasLine(const Screen screen) {
+  if (screen == Screen::Menu) {
+    dayCareLine_[0] = '\0';
+    pokemon::PokemonRecord resident{};
+    if (service_.readDayCareRecord(resident)) {
+      snprintf(dayCareLine_, sizeof(dayCareLine_), tr(STR_POKEMON_DAY_CARE_LINE),
+               resident.nickname[0] == '\0' ? speciesName(resident.speciesId) : resident.nickname.data(),
+               static_cast<unsigned>(pokemon::levelForXp(resident.totalXp)));
+    }
+  } else if (screen == Screen::Badges) {
+    // Reads the firmware's reading stats, never writes them (SAVE-SAFETY R4).
+    // Hidden without a valid clock or with Streaks off.
+    streakLine_[0] = '\0';
+    auto& extrasStore = pokemon::devicePokemonExtrasStore();
+    if (!extrasStore.isFeatureEnabled(pokemon::extras::Feature::Streaks)) return;
+    const pokemon::extras::StreakInput streak = pokemon::readExtrasStreakInput();
+    if (!streak.clockValid) return;
+    const unsigned bonus = pokemon::extras::streakBonusPercent(extrasStore.state(), streak);
+    if (streak.streakDays == 1) {
+      snprintf(streakLine_, sizeof(streakLine_), tr(STR_POKEMON_STREAK_LINE_ONE), bonus);
+    } else {
+      snprintf(streakLine_, sizeof(streakLine_), tr(STR_POKEMON_STREAK_LINE), static_cast<unsigned>(streak.streakDays),
+               bonus);
+    }
+  }
+}
+#endif
 
 bool PokemonActivity::showsPartyHealthRows() const {
   if (screen_ == Screen::Party || screen_ == Screen::BattleSwitch) return true;
@@ -2456,7 +2524,7 @@ void PokemonActivity::activate() {
       return;
     case Screen::Actions: {
       const bool party = actionSource_ == Screen::Party;
-      const auto actions = pokemon::collectionActions(party, snapshot_.partyCount, canEvolveFocused());
+      const auto actions = focusedActions();
       if (selected_ < 0 || selected_ >= actions.count) return;
       switch (actions.items[selected_]) {
         case pokemon::CollectionAction::Summary:
@@ -2526,6 +2594,36 @@ void PokemonActivity::activate() {
           }
           return;
         }
+#if defined(CROSSINK_POKEMON_EXTRAS)
+        case pokemon::CollectionAction::DayCare: {
+          // Extras state only: neither branch writes the main save.
+          if (focusedRecord_.recordId == 0) return;
+          const char* name = focusedRecord_.nickname[0] == '\0' ? speciesName(focusedRecord_.speciesId)
+                                                                : focusedRecord_.nickname.data();
+          char text[sizeof(message_)];
+          if (pokemon::devicePokemonExtrasStore().state().dayCareRecordId == focusedRecordId_) {
+            if (service_.takeFromDayCare() != pokemon::ServiceStatus::Ok) {
+              showMessage(tr(STR_POKEMON_SAVE_ERROR), actionSource_);
+              return;
+            }
+            snprintf(text, sizeof(text), tr(STR_POKEMON_DAY_CARE_TAKEN), name);
+          } else {
+            auto result = pokemon::extras::DayCareSendResult::InvalidRecord;
+            if (service_.sendToDayCare(focusedRecordId_, result) != pokemon::ServiceStatus::Ok) {
+              showMessage(tr(STR_POKEMON_SAVE_ERROR), actionSource_);
+              return;
+            }
+            if (result == pokemon::extras::DayCareSendResult::Sent ||
+                result == pokemon::extras::DayCareSendResult::AlreadyThere) {
+              snprintf(text, sizeof(text), tr(STR_POKEMON_DAY_CARE_SENT), name);
+            } else {
+              snprintf(text, sizeof(text), "%s", tr(STR_POKEMON_DAY_CARE_UNAVAILABLE));
+            }
+          }
+          showMessage(text, actionSource_);
+          return;
+        }
+#endif
       }
       break;
     }
@@ -3798,9 +3896,9 @@ void PokemonActivity::buildRows() {
         break;
       }
       case Screen::Actions: {
-        const auto actions = pokemon::collectionActions(actionSource_ == Screen::Party, snapshot_.partyCount, canEvolveFocused());
+        const auto actions = focusedActions();
         if (index >= actions.count) break;
-        const char* label = collectionActionLabel(actions.items[index]);
+        const char* label = actionLabel(actions.items[index]);
         row(local, label);
         break;
       }
@@ -4755,7 +4853,15 @@ void PokemonActivity::renderMenuPityBars() {
   // buttonGridCellRect() only ever fills MENU_GRID_ROW_HEIGHT - 8 of each
   // row's height (see drawGridButton()) - the true bottom of the last drawn
   // button is 8px higher than a naive rows*MENU_GRID_ROW_HEIGHT would say.
-  const int gridBottom = buttonGridTop() + gridRows * MENU_GRID_ROW_HEIGHT - 8;
+  int gridBottom = buttonGridTop() + gridRows * MENU_GRID_ROW_HEIGHT - 8;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  // "Day Care: Eevee Lv 14" right under the grid; the block below then
+  // centres in what is left.
+  if (dayCareLine_[0] != '\0') {
+    centered(renderer, UI_10_FONT_ID, gridBottom + 6, dayCareLine_);
+    gridBottom += renderer.getLineHeight(UI_10_FONT_ID) + 10;
+  }
+#endif
 
   constexpr int rowHeight = 18;
   constexpr int barHeight = 8;
@@ -4840,7 +4946,11 @@ int PokemonActivity::trainerCardCells(pokemon::PokemonUiRect* cells, const int c
   int viewableBottom = 0;
   int viewableLeft = 0;
   renderer.getOrientedViewableTRBL(&viewableTop, &viewableRight, &viewableBottom, &viewableLeft);
-  const int gridTop = subtitleY + renderer.getLineHeight(UI_10_FONT_ID) + 20;
+  int gridTop = subtitleY + renderer.getLineHeight(UI_10_FONT_ID) + 20;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  // Room for the Trainer Card's streak line (renderTrainerCard()).
+  if (!hallOfFame && streakLine_[0] != '\0') gridTop += renderer.getLineHeight(UI_10_FONT_ID) + 4;
+#endif
   const int gridBottom = renderer.getScreenHeight() - metrics.buttonHintsHeight - viewableBottom - 8;
   constexpr int HALL_OF_FAME_TILE_HEIGHT = 150;  // room for a 90px sprite plus two lines of text, unlike a bare icon
   return hallOfFame ? pokemon::pokemonTrainerCardGrid(cells, capacity, renderer.getScreenWidth(), gridTop, gridBottom,
@@ -4878,6 +4988,11 @@ void PokemonActivity::renderTrainerCard(const int contentTop) {
   }
   const int pokedexY = contentTop + renderer.getLineHeight(UI_12_FONT_ID) + 8;
   centered(renderer, UI_10_FONT_ID, pokedexY, line);
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  if (streakLine_[0] != '\0') {
+    centered(renderer, UI_10_FONT_ID, pokedexY + renderer.getLineHeight(UI_10_FONT_ID) + 4, streakLine_);
+  }
+#endif
 
   pokemon::PokemonUiRect cells[pokemon::GYM_COUNT]{};
   const int cellCount = trainerCardCells(cells, pokemon::GYM_COUNT, /*hallOfFame=*/false);
@@ -5190,9 +5305,7 @@ void PokemonActivity::renderChoiceButtons() {
   const pokemon::BattleRecordEntry slotMoves = (slotScreen || movesetPick) && focusedRecord_.recordId != 0
                                                    ? service_.peekBattleMoves(focusedRecord_)
                                                    : pokemon::BattleRecordEntry{};
-  const auto actions = screen_ == Screen::Actions ? pokemon::collectionActions(actionSource_ == Screen::Party,
-                                                                               snapshot_.partyCount, canEvolveFocused())
-                                                  : pokemon::CollectionActionSet{};
+  const auto actions = screen_ == Screen::Actions ? focusedActions() : pokemon::CollectionActionSet{};
 
   const size_t learnable =
       movesetPick ? learnableMoveCount(focusedRecord_.speciesId, pokemon::levelForXp(focusedRecord_.totalXp), slotMoves)
@@ -5293,7 +5406,7 @@ void PokemonActivity::renderChoiceButtons() {
         }
         break;
       case Screen::Actions:
-        label = index < actions.count ? collectionActionLabel(actions.items[index]) : "";
+        label = index < actions.count ? actionLabel(actions.items[index]) : "";
         break;
       case Screen::TmReplaceSlot:
       case Screen::PpUpSlot:

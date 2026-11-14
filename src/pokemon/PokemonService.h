@@ -11,6 +11,9 @@
 #include "PokemonIvEvStore.h"
 #include "PokemonMovesetStore.h"
 #include "PokemonStore.h"
+#if defined(CROSSINK_POKEMON_EXTRAS)
+#include <PokemonExtrasRules.h>
+#endif
 
 namespace pokemon {
 
@@ -378,6 +381,23 @@ class PokemonService {
   // rather than needing a separate "has one" query.
   HallOfFameState peekHallOfFame() const;
 
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  // Extras M2 (docs/extras/M2-HOOKS.md), defined in PokemonServiceExtras.cpp.
+  // Day Care state lives in the extras file only; none of these three writes
+  // the main save.
+  //
+  // PC Box > a Pokemon > Send to Day Care. `result` says what happened; the
+  // status is StorageError only when the extras file could not be written.
+  // A slot left holding a record that no longer exists, or one that is back
+  // in the Party, is emptied first.
+  ServiceStatus sendToDayCare(uint32_t recordId, extras::DayCareSendResult& result);
+  // Empties the Day Care slot (NotApplicable when it is already empty).
+  ServiceStatus takeFromDayCare();
+  // Read-only: the Pokemon in Day Care. False when the slot is empty or its
+  // record cannot be read.
+  bool readDayCareRecord(PokemonRecord& output);
+#endif
+
  private:
   ServiceStatus prepareStore();
   ServiceStatus loadReadyState(PokemonState& output);
@@ -443,6 +463,14 @@ class PokemonService {
   IvEvEntry* findPendingIvEvRoll(uint32_t recordId);
   void cachePendingIvEvRoll(const IvEvEntry& entry);
   void clearPendingIvEvRoll(uint32_t recordId);
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  // creditMinutes()'s extras tail: streak bonus XP, the streak milestone
+  // encounter and Day Care XP. Best effort (SAVE-SAFETY R5): it reports
+  // nothing back and never changes what creditMinutes() returns.
+  void applyExtrasAfterCredit(uint16_t minutes, uint8_t bookProgressPercent);
+  // After a boxed Pokemon went to the Party or was released.
+  void clearDayCareIfHolds(uint32_t recordId);
+#endif
 
   PokemonStore& store_;
   PokemonBattleStore& battleStore_;

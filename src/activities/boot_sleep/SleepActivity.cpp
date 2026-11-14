@@ -44,6 +44,9 @@
 #include "fontIds.h"
 #include "images/Logo120.h"
 #include "images/MoonIcon.h"
+#if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
+#include "PartySleepScreen.h"
+#endif
 
 namespace {
 
@@ -575,6 +578,17 @@ void SleepActivity::onEnter() {
     GUI.drawPopup(renderer, tr(STR_ENTERING_SLEEP));
   }
 
+#if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
+  // Extras > Party sleep screen replaces the configured mode (it is a toggle
+  // in the extras file, not a SLEEP_SCREEN_MODE value: SAVE-SAFETY R2). Any
+  // failure returns false and the configured screen draws as before.
+  // (A frame kept for the Overlay mode just stays unused until deep sleep.)
+  if (pokemon::drawPartySleepScreen(renderer)) {
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+    return;
+  }
+#endif
+
   switch (sleepScreen) {
     case (CrossPointSettings::SLEEP_SCREEN_MODE::BLANK):
       return renderBlankSleepScreen();
@@ -610,6 +624,11 @@ bool SleepActivity::rendersBeforeExit() const {
   // Keep the reader's cleanup first on devices without PSRAM. Covers and custom
   // images can otherwise compete with the reader for scarce internal memory.
   if (!psramHeapAvailable()) return false;
+#if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
+  // The Party sleep screen shows the lead's XP: let the reader save its
+  // reading credit first, like the stats screens below.
+  if (pokemon::partySleepScreenEnabled()) return false;
+#endif
   if (fromTimeout &&
       SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT) {
     return false;
