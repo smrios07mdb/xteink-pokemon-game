@@ -1612,6 +1612,9 @@ bool PokemonService::beginReadingSession() {
     return false;
   }
   readingSessionActive_ = true;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  setExtrasOpenBook(0, 0);  // the reader sets it on its first page turn
+#endif
   return true;
 }
 
@@ -1633,6 +1636,9 @@ void PokemonService::flushOnExit(const uint32_t nowMs) {
     LOG_ERR("PokemonService", "Retaining unsaved reading credit for the next session");
   }
   readingSessionActive_ = false;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  setExtrasOpenBook(0, 0);  // after the last checkpoint used it
+#endif
 }
 
 bool PokemonService::creditFromTracker(void* context, const uint16_t minutes, const uint8_t bookProgressPercent) {

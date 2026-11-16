@@ -1,23 +1,26 @@
 #if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
 
-// Extras M2 and M3 (docs/extras/M2-HOOKS.md, M3-HOOKS.md): the PokemonService
-// members that tie the pure rules in lib/Pokemon/PokemonExtras{Rules,Eggs,
-// Quests} to the two stores. Kept out of
+// Extras M2, M3 and M4 (docs/extras/M2-HOOKS.md, M3-HOOKS.md, M4-HOOKS.md):
+// the PokemonService members that tie the pure rules in
+// lib/Pokemon/PokemonExtras{Rules,Eggs,Quests,Kindle,Boss} to the two stores. Kept out of
 // PokemonService.cpp so upstream merges touch as little as possible there.
 //
 // Hard limits (docs/extras/SAVE-SAFETY.md):
 //   R3  the main save changes only through awardFixedXp(), an ordinary
-//       wild Encounter, a hatch appended like a catch and quest items put in
-//       the bag the way upstream's own drops are;
+//       wild Encounter (streak milestone, book boss), a hatch appended like a
+//       catch, quest items and the boss's balls put in the bag the way
+//       upstream's own drops are, and synced reading through creditMinutes();
 //   R4  reading statistics are only read (PokemonExtrasHooks);
 //   R5  everything here is best effort: a missing, corrupt or unwritable
 //       extras file never fails a main-save operation;
 //   R6  main save first, then extras. The exceptions record their intent in
 //       extras first, so a crash loses and never duplicates: the milestone
-//       encounter, the egg hatch and quest rewards (see each below).
+//       encounter, the egg hatch, quest rewards, the Kindle mark and the book
+//       boss (see each below).
 
 #include <Logging.h>
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <new>
@@ -65,8 +68,14 @@ void PokemonService::applyExtrasAfterCredit(const uint16_t minutes, const uint8_
   const bool questsOn = extrasStore.isFeatureEnabled(extras::Feature::DailyQuests);
   // Page turns with Eggs off never count toward a later egg.
   if (!eggsOn) extrasEggPagesPending_ = 0;
+  // M4: the open book's Kindle mark, and a boss still held for delivery.
+  const bool markOn = extrasOpenBookHash_ != 0 && extrasStore.isFeatureEnabled(extras::Feature::KindleCredit);
+  const bool bossWaiting =
+      extrasStore.isFeatureEnabled(extras::Feature::BookBoss) && extras::hasHeldBoss(extrasStore.state());
   // Nothing to do: no stats read, no extras write, nothing in the main save.
-  if (!streaksOn && !eggsOn && !questsOn && extrasStore.state().dayCareRecordId == 0) return;
+  if (!streaksOn && !eggsOn && !questsOn && !markOn && !bossWaiting && extrasStore.state().dayCareRecordId == 0) {
+    return;
+  }
 
   const StatePtr copy = copyExtrasState(extrasStore);
   if (!copy) {
@@ -176,6 +185,11 @@ void PokemonService::applyExtrasAfterCredit(const uint16_t minutes, const uint8_
     }
   }
 
+  // M4, Kindle credit: pages read here raise the open book's mark (only
+  // upward; noteLocalProgress() does nothing with the toggle off), so a later
+  // sync never credits them again. No write unless the mark moved.
+  if (markOn) extras::noteLocalProgress(*copy, extrasOpenBookHash_, extrasOpenBookPermille_);
+
   if (*copy != extrasStore.state() && !extrasStore.commit(*copy)) {
     LOG_ERR("PokemonService", "Failed to save extras after reading credit");
   }
@@ -183,6 +197,9 @@ void PokemonService::applyExtrasAfterCredit(const uint16_t minutes, const uint8_
   if (eggPagesCounted > 0 && *copy == extrasStore.state()) {
     extrasEggPagesPending_ = extrasEggPagesPending_ > pagesToFlush ? extrasEggPagesPending_ - pagesToFlush : 0;
   }
+  // M4, book boss: a boss held because the queue was full goes in now if
+  // there is room. After the commit above: it changes the extras file itself.
+  if (bossWaiting) deliverHeldExtrasBoss();
 }
 
 void PokemonService::settleExtrasPendingHatch() {
@@ -397,6 +414,169 @@ ServiceStatus PokemonService::takeFromDayCare() {
     return ServiceStatus::StorageError;
   }
   return ServiceStatus::Ok;
+}
+
+// --- M4 -------------------------------------------------------------------
+
+void PokemonService::setExtrasOpenBook(const uint32_t bookHash, const uint16_t permille) {
+  extrasOpenBookHash_ = bookHash;
+  extrasOpenBookPermille_ = permille > 1000 ? 1000 : permille;
+}
+
+uint16_t PokemonService::creditRemoteReading(const extras::KindleSync& sync) {
+  PokemonExtrasStore& extrasStore = devicePokemonExtrasStore();
+  if (sync.documentHash == 0 || extrasStore.readOnly() ||
+      !extrasStore.isFeatureEnabled(extras::Feature::KindleCredit)) {
+    return 0;
+  }
+  PokemonState mainState{};
+  if (loadReadyState(mainState) != ServiceStatus::Ok || mainState.partyRecordIds[0] == 0) return 0;
+  settleExtrasPendingHatch();
+
+  // 1. The mark, in extras, BEFORE any minute reaches the main save: a crash
+  // after this loses this sync's minutes and can never credit them twice.
+  extras::KindleCredit credit{};
+  {
+    const StatePtr copy = copyExtrasState(extrasStore);
+    if (!copy) return 0;
+    credit = extras::applyKindleSync(*copy, sync);
+    if (*copy != extrasStore.state() && !extrasStore.commit(*copy)) {
+      LOG_ERR("PokemonService", "Failed to save the Kindle mark; nothing credited");
+      return 0;
+    }
+  }
+  if (credit.droppedMinutes != 0) {
+    LOG_INF("PokemonService", "Kindle credit: guard dropped %u minutes (book %08lx)",
+            static_cast<unsigned>(credit.droppedMinutes), static_cast<unsigned long>(sync.documentHash));
+  }
+  if (credit.minutes == 0) return 0;
+
+  // 2. The minutes, through the normal reading path in chunks of at most an
+  // hour, so the hourly rolls fire as they would have while reading. Queue
+  // full: the rest is XP only, for the lead.
+  const auto remotePercent = static_cast<uint8_t>(std::min<uint32_t>(100U, (sync.remotePermille + 5U) / 10U));
+  uint16_t remaining = credit.minutes;
+  uint16_t credited = 0;
+  while (remaining > 0) {
+    if (!store_.loadState(mainState) || mainState.partyRecordIds[0] == 0) break;
+    const extras::KindleStep step = extras::nextKindleStep(remaining, extras::hasEncounterRoom(mainState));
+    if (step.creditMinutes != 0) {
+      if (!creditMinutes(step.creditMinutes, remotePercent)) break;
+      remaining = static_cast<uint16_t>(remaining - step.creditMinutes);
+      credited = static_cast<uint16_t>(credited + step.creditMinutes);
+      continue;
+    }
+    if (step.xpOnlyMinutes != 0 && awardFixedXp(mainState.partyRecordIds[0], step.xpOnlyMinutes) == ServiceStatus::Ok) {
+      credited = static_cast<uint16_t>(credited + step.xpOnlyMinutes);
+    }
+    break;
+  }
+  if (credited != credit.minutes) {
+    LOG_ERR("PokemonService", "Kindle credit: %u of %u minutes went through", static_cast<unsigned>(credited),
+            static_cast<unsigned>(credit.minutes));
+  }
+
+  // 3. Egg pages (and the egg-pages quest) and the notice, after the main save.
+  const StatePtr after = copyExtrasState(extrasStore);
+  if (!after) return credited;
+  if (credit.pages > 0 && extrasStore.isFeatureEnabled(extras::Feature::Eggs)) {
+    const uint16_t counted = extras::applyEggPages(*after, credit.pages);
+    if (extrasStore.isFeatureEnabled(extras::Feature::DailyQuests)) extras::recordQuestEggPages(*after, counted);
+  }
+  extras::addKindleNotice(*after, credited);
+  if (*after != extrasStore.state() && !extrasStore.commit(*after)) {
+    LOG_ERR("PokemonService", "Failed to save egg pages and the notice after a Kindle credit");
+  }
+  return credited;
+}
+
+extras::BookFinishResult PokemonService::onExtrasBookFinished(const extras::BookFinish& book) {
+  PokemonExtrasStore& extrasStore = devicePokemonExtrasStore();
+  if (book.bookHash == 0 || extrasStore.readOnly() || !extrasStore.isFeatureEnabled(extras::Feature::BookBoss)) {
+    return extras::BookFinishResult::Ignored;
+  }
+  PokemonState mainState{};
+  if (loadReadyState(mainState) != ServiceStatus::Ok || mainState.partyRecordIds[0] == 0) {
+    return extras::BookFinishResult::Ignored;  // no game yet: nothing to count toward
+  }
+  settleExtrasPendingHatch();
+  const StatePtr copy = copyExtrasState(extrasStore);
+  if (!copy) return extras::BookFinishResult::Ignored;
+  const extras::BookFinishResult result = extras::onBookFinished(*copy, mainState, book);
+  if (result == extras::BookFinishResult::Ignored || result == extras::BookFinishResult::AlreadyCounted) return result;
+  if (!extrasStore.commit(*copy)) {
+    LOG_ERR("PokemonService", "Failed to save a finished book");
+    return extras::BookFinishResult::Ignored;
+  }
+  if (result == extras::BookFinishResult::BossHeld) {
+    extrasBossNoticePending_ = true;
+    deliverHeldExtrasBoss();
+  }
+  return result;
+}
+
+bool PokemonService::deliverHeldExtrasBoss() {
+  PokemonExtrasStore& extrasStore = devicePokemonExtrasStore();
+  if (extrasStore.readOnly() || !extrasStore.isFeatureEnabled(extras::Feature::BookBoss) ||
+      !extras::hasHeldBoss(extrasStore.state())) {
+    return false;
+  }
+  PokemonState state{};
+  if (loadReadyState(state) != ServiceStatus::Ok || state.partyRecordIds[0] == 0 ||
+      !extras::hasEncounterRoom(state)) {
+    return false;  // the boss stays held for the next checkpoint or menu visit
+  }
+  PokemonRecord leader{};
+  if (!store_.readRecord(state.partyRecordIds[0], leader)) return false;
+
+  // 1. Taken, in extras. A crash after this loses this boss, never queues two.
+  const StatePtr copy = copyExtrasState(extrasStore);
+  if (!copy) return false;
+  const uint16_t speciesId = extras::takeHeldBoss(*copy);
+  if (!extrasStore.commit(*copy)) {
+    LOG_ERR("PokemonService", "Failed to save the boss delivery");
+    return false;
+  }
+
+  // 2. An ordinary wild Encounter and its balls, in the main save (R2, R3).
+  const size_t pendingBefore = pendingEventCount(state);
+  extras::BossReward reward{};
+  bool queued = extras::deliverBoss(state, speciesId, levelForXp(leader.totalXp), random_, reward);
+  if (queued) {
+    // Shininess as creditMinutes() rolls it, on the Encounter just queued.
+    const size_t pendingCount = pendingEventCount(state);
+    for (size_t index = pendingBefore; index < pendingCount && random_.below != nullptr; ++index) {
+      PendingEvent& queuedEvent = state.pendingEvents[index];
+      if (queuedEvent.kind == PendingEventKind::Encounter) {
+        queuedEvent.isShiny = random_.below(random_.context, SHINY_CHANCE_DENOMINATOR) == 0;
+      }
+    }
+    queued = store_.commit(state);
+  }
+  if (queued) return true;
+
+  // 3. The main save did not take it: hold the boss again.
+  LOG_ERR("PokemonService", "Failed to queue the book boss");
+  if (!extras::holdBoss(*copy, speciesId) || !extrasStore.commit(*copy)) {
+    LOG_ERR("PokemonService", "Failed to hold the book boss again");
+  }
+  return false;
+}
+
+bool PokemonService::takeExtrasBossNotice() {
+  const bool pending = extrasBossNoticePending_;
+  extrasBossNoticePending_ = false;
+  return pending;
+}
+
+uint16_t PokemonService::takeExtrasKindleNotice() {
+  PokemonExtrasStore& extrasStore = devicePokemonExtrasStore();
+  if (extrasStore.readOnly() || extrasStore.state().kindlePendingNoticeMinutes == 0) return 0;
+  const StatePtr copy = copyExtrasState(extrasStore);
+  if (!copy) return 0;
+  const uint16_t minutes = extras::takeKindleNotice(*copy);
+  if (!extrasStore.commit(*copy)) return 0;  // shown on a later visit
+  return minutes;
 }
 
 bool PokemonService::readDayCareRecord(PokemonRecord& output) {

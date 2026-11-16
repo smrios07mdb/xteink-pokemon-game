@@ -1,5 +1,9 @@
 #include "KOReaderSyncActivity.h"
 
+#if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
+#include "pokemon/PokemonExtrasHooks.h"
+#endif
+
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
@@ -154,6 +158,13 @@ void KOReaderSyncActivity::saveProgressAndReturn(const CrossPointPosition& posit
   }
   RecentBookProgress::saveCachedEpubPercent(*epub, position.spineIndex, position.pageNumber, pageCount);
   progressSucceeded = true;
+#if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
+  // Kindle credit (docs/extras/features/05-kindle-credit.md), after the save.
+  pokemon::extrasOnRemoteProgressApplied(
+      epub->getPath(), epub->getCachePath(), localProgress.percentage,
+      epub->calculateProgress(position.spineIndex, static_cast<float>(position.pageNumber) / pageCount),
+      pokemon::extrasEpubBookPages(*epub, position.spineIndex, pageCount));
+#endif
   if (!uploadExtras()) return;
   syncSucceeded = true;
   returnToSource();
