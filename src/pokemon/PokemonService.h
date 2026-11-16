@@ -12,7 +12,9 @@
 #include "PokemonMovesetStore.h"
 #include "PokemonStore.h"
 #if defined(CROSSINK_POKEMON_EXTRAS)
+#include <PokemonExtrasBoss.h>
 #include <PokemonExtrasEggs.h>
+#include <PokemonExtrasKindle.h>
 #include <PokemonExtrasQuests.h>
 #include <PokemonExtrasRules.h>
 #endif
@@ -419,6 +421,33 @@ class PokemonService {
   // A wild battle won (fainted or caught). Road trainers and gyms are counted
   // inside resolveTrainer() / markGymDefeated().
   void noteWildBattleWon();
+
+  // Extras M4 (docs/extras/M4-HOOKS.md), also in PokemonServiceExtras.cpp.
+  // Called through src/pokemon/PokemonExtrasHooks, never from a reader directly.
+  //
+  // The open book's id (extrasBookHash()) and position, RAM only; hash 0 = no
+  // book open. At each credit checkpoint, with Kindle credit on, it keeps the
+  // book's high-water mark current so a later sync never credits pages read
+  // here (feature 5). Cleared by beginReadingSession() and flushOnExit().
+  void setExtrasOpenBook(uint32_t bookHash, uint16_t permille);
+  // A synced position was applied (feature 5): extras first (the mark), then
+  // the minutes through creditMinutes() in chunks, XP only once the queue is
+  // full, then egg pages and the "Read on another device" notice. Never
+  // touches the firmware's reading stats (R4). Returns the minutes credited.
+  uint16_t creditRemoteReading(const extras::KindleSync& sync);
+  // A book went from not-completed to completed (feature 3). Counts it once
+  // ever; a qualifying book holds a boss, delivered right away when the queue
+  // has room. Extras-only until delivery.
+  extras::BookFinishResult onExtrasBookFinished(const extras::BookFinish& book);
+  // Queues the held boss as an ordinary wild Encounter with its ball reward:
+  // extras first (boss taken), then the main save; a failed main commit holds
+  // it again. False when nothing was queued (none held, Book boss off, no
+  // queue room, no save).
+  bool deliverHeldExtrasBoss();
+  // Pokemon menu visit, shown once each. The boss message is RAM only (set by
+  // onExtrasBookFinished() on BossHeld); the Kindle minutes live in extras.
+  bool takeExtrasBossNotice();
+  uint16_t takeExtrasKindleNotice();
 #endif
 
  private:
@@ -510,6 +539,10 @@ class PokemonService {
   // Set while applyExtrasAfterCredit() runs: its own XP grants must not write
   // extras behind its back (it counts the lead's level-up itself).
   bool extrasCreditActive_ = false;
+  // M4: the open book (setExtrasOpenBook()) and the boss message, RAM only.
+  uint32_t extrasOpenBookHash_ = 0;
+  uint16_t extrasOpenBookPermille_ = 0;
+  bool extrasBossNoticePending_ = false;
 #endif
 
   PokemonStore& store_;

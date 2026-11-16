@@ -291,6 +291,11 @@ class PokemonActivity final : public Activity {
   bool hatchEggIfReady();
   // Screen::Quests: the rows drawn for the three quests and the Claim row.
   void questRowLabel(int index, char* out, size_t size) const;
+  // M4, Pokemon menu open: the book boss message and the "Read on another
+  // device" minutes, once each, in one message. False when there is neither.
+  bool showExtrasNotices();
+  // What menu open does after the notices (or right away without them).
+  void continueInitialScreen();
 #endif
   bool showsPartyHealthRows() const;
   bool showsMachineCapabilityRows() const;
@@ -339,6 +344,8 @@ class PokemonActivity final : public Activity {
   char dayCareLine_[72]{};  // "Day Care: Eevee Lv 14"; empty = slot empty
   char streakLine_[72]{};   // "Streak: 6 days (+30% XP)"; empty = hidden (no clock, or Streaks off)
   char eggLine_[72]{};      // "Egg: 412 pages to go"; empty = no egg, or Eggs off
+  char ribbonLine_[72]{};   // "Books finished: 3"; empty = none yet
+  bool extrasNoticeContinues_ = false;  // the open Message is showExtrasNotices()'s
   uint8_t eggPercent_ = 0;  // the Menu's egg bar, 0..100
   uint8_t questReadyMask_ = 0;  // questRewardsReadyMask() when the Menu or Quests screen opened
 #endif

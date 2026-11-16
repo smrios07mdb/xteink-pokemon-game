@@ -1,5 +1,9 @@
 #include "BookStatsActivity.h"
 
+#if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
+#include "pokemon/PokemonExtrasHooks.h"
+#endif
+
 #include <I18n.h>
 
 #include "BookStatsView.h"
@@ -108,6 +112,9 @@ void BookStatsActivity::saveStats() {
     SyncPending::mark(syncBookPath, SyncPending::STATS_BIT);
     // The date editor can mark the book finished (or not) too.
     if (stats.isCompleted != savedCompleted) BookSyncFile::onFinishedChanged(syncBookPath, stats.isCompleted);
+#if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
+    if (stats.isCompleted && !savedCompleted) pokemon::extrasOnBookCompleted(syncBookPath, bookCachePath);
+#endif
   }
   savedCompleted = stats.isCompleted;
   refreshAllDevicesStats();

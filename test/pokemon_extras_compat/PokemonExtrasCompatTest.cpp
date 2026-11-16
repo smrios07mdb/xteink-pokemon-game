@@ -29,7 +29,9 @@
 #include <vector>
 
 #include "PokemonExtras.h"
+#include "PokemonExtrasBoss.h"
 #include "PokemonExtrasEggs.h"
+#include "PokemonExtrasKindle.h"
 #include "PokemonExtrasQuests.h"
 #include "PokemonExtrasRules.h"
 #include "PokemonStoreCodec.h"
@@ -617,6 +619,263 @@ void runM3Operations(const bool fixture) {
   CHECK(reader.state() == extrasStore.state());
 }
 
+// M4 (docs/extras/M4-HOOKS.md section 5): the book boss and Kindle credit
+// through the service, the way the reader hooks call it. Reading stats are not
+// part of the host service (the hooks only read them, R4); the simulator gate
+// covers those files.
+void runM4Operations(const bool fixture) {
+  using pokemon::ServiceStatus;
+  using pokemon::extras::BookFinishResult;
+  using pokemon::extras::Feature;
+  namespace extras = pokemon::extras;
+
+  pokemon::PokemonExtrasStore& extrasStore = pokemon::devicePokemonExtrasStore();
+  extrasStore.load();
+  for (uint8_t index = 0; index < extras::FEATURE_COUNT; ++index) {
+    CHECK(extrasStore.setFeatureEnabled(static_cast<Feature>(index), false));
+  }
+
+  pokemon::PokemonStore store;
+  pokemon::PokemonBattleStore battleStore;
+  pokemon::PokemonIvEvStore ivEvStore;
+  pokemon::PokemonHallOfFameStore hallOfFameStore;
+  pokemon::PokemonService service(store, battleStore, ivEvStore, hallOfFameStore, {nullptr, zeroRandom});
+  pokemon::PokemonSnapshot snapshot{};
+  CHECK(service.loadSnapshot(snapshot) == ServiceStatus::Ok);
+  if (snapshot.partyCount == 0) return;
+  const uint32_t leaderId = snapshot.party[0].recordId;
+  const auto stateNow = [&] {
+    pokemon::PokemonSnapshot current{};
+    CHECK(service.loadSnapshot(current) == ServiceStatus::Ok);
+    return current.state;
+  };
+  const auto leaderXp = [&] {
+    pokemon::PokemonRecord record{};
+    CHECK(service.readRecord(leaderId, record) == ServiceStatus::Ok);
+    return record.totalXp;
+  };
+  // The queue is the player's on a real save: the test empties or fills it in
+  // the in-memory copy only.
+  const auto clearQueue = [&] {
+    pokemon::PokemonState state = stateNow();
+    while (pokemon::discardFrontPendingEvent(state)) {
+    }
+    CHECK(store.commit(state));
+  };
+  const auto fillQueue = [&] {
+    pokemon::PokemonState state = stateNow();
+    while (extras::hasEncounterRoom(state)) {
+      pokemon::PendingEvent event{};
+      event.kind = pokemon::PendingEventKind::Encounter;
+      event.speciesId = 16;
+      event.level = 5;
+      event.gender = pokemon::Gender::Male;
+      if (!pokemon::enqueuePendingEvent(state, event)) break;
+    }
+    CHECK(store.commit(state));
+  };
+  constexpr size_t masterBallSlot = extras::BOSS_ITEM_MASTER_BALL - pokemon::EVOLUTION_ITEM_COUNT - 1U;
+  constexpr uint32_t BOOK_A = 0xB00C000AU;
+  constexpr uint32_t BOOK_B = 0xB00C000BU;
+  constexpr uint32_t BOOK_C = 0xB00C000CU;
+  constexpr uint32_t BOOK_SHORT = 0xB00C0005U;
+  constexpr uint32_t HOUR = 60U * 60U;
+
+  // --- Toggles off: neither feature reads or writes anything.
+  {
+    const auto filesBefore = snapshotUpstreamFiles();
+    const std::vector<uint8_t> extrasBefore = extrasFileBytes();
+    extras::KindleSync sync{};
+    sync.documentHash = BOOK_A;
+    sync.localPermille = 100;
+    sync.remotePermille = 900;
+    sync.bookPages = 1000;
+    CHECK(service.creditRemoteReading(sync) == 0);
+    CHECK(service.onExtrasBookFinished({BOOK_A, 10 * HOUR}) == BookFinishResult::Ignored);
+    CHECK(!service.deliverHeldExtrasBoss());
+    CHECK(service.takeExtrasKindleNotice() == 0);
+    CHECK(!service.takeExtrasBossNotice());
+    CHECK(snapshotUpstreamFiles() == filesBefore);
+    CHECK(extrasFileBytes() == extrasBefore);
+    // Reading with a book open and every toggle off writes no extras either.
+    service.setExtrasOpenBook(BOOK_A, 700);
+    CHECK(service.creditMinutes(1, 40));
+    CHECK(extrasFileBytes() == extrasBefore);
+    CHECK(extras::kindleHighWaterPermille(extrasStore.state(), BOOK_A) == 0);
+    service.setExtrasOpenBook(0, 0);
+  }
+
+  // --- Book boss on: a finished book with an hour of reading.
+  CHECK(extrasStore.setFeatureEnabled(Feature::BookBoss, true));
+  clearQueue();
+  {
+    const pokemon::PokemonState before = stateNow();
+    const uint8_t ballsBefore = before.bagCounts[masterBallSlot];
+    CHECK(service.onExtrasBookFinished({BOOK_A, HOUR}) == BookFinishResult::BossHeld);
+    CHECK(service.takeExtrasBossNotice());
+    CHECK(!service.takeExtrasBossNotice());  // once
+    const pokemon::PokemonState after = stateNow();
+    CHECK(countEncounters(after) == countEncounters(before) + 1);
+    CHECK(pokemon::pendingEventCount(after) == pokemon::pendingEventCount(before) + 1);
+    const pokemon::PendingEvent& boss = after.pendingEvents[pokemon::pendingEventCount(after) - 1];
+    CHECK(boss.kind == pokemon::PendingEventKind::Encounter);
+    CHECK(boss.speciesId != 151 && boss.speciesId != 0);
+    if (ballsBefore < 255) CHECK(after.bagCounts[masterBallSlot] == ballsBefore + 1);
+    CHECK(!extras::hasHeldBoss(extrasStore.state()));
+    CHECK(extras::booksFinishedRibbons(extrasStore.state()) == 1);
+    std::printf("  boss: species %u at level %u, Master Balls %u -> %u, ribbons 1\n",
+                static_cast<unsigned>(boss.speciesId), static_cast<unsigned>(boss.level),
+                static_cast<unsigned>(ballsBefore), static_cast<unsigned>(after.bagCounts[masterBallSlot]));
+    checkMainSave();
+    // The same book again (un-marked and marked again): nothing.
+    const auto filesMid = snapshotUpstreamFiles();
+    const std::vector<uint8_t> extrasMid = extrasFileBytes();
+    CHECK(service.onExtrasBookFinished({BOOK_A, HOUR}) == BookFinishResult::AlreadyCounted);
+    CHECK(snapshotUpstreamFiles() == filesMid);
+    CHECK(extrasFileBytes() == extrasMid);
+    // Under an hour, Kindle credit off: ribbon only.
+    CHECK(service.onExtrasBookFinished({BOOK_SHORT, HOUR - 1}) == BookFinishResult::RibbonOnly);
+    CHECK(snapshotUpstreamFiles() == filesMid);
+    CHECK(extras::booksFinishedRibbons(extrasStore.state()) == 2);
+  }
+
+  // --- A full queue: the boss is held, then delivered once an event is cleared.
+  {
+    fillQueue();
+    const pokemon::PokemonState full = stateNow();
+    CHECK(service.onExtrasBookFinished({BOOK_B, 2 * HOUR}) == BookFinishResult::BossHeld);
+    CHECK(extras::hasHeldBoss(extrasStore.state()));
+    CHECK(pokemon::pendingEventCount(stateNow()) == pokemon::pendingEventCount(full));
+    // A second qualifying book while one is held: counted, no second boss.
+    CHECK(service.onExtrasBookFinished({BOOK_C, 2 * HOUR}) == BookFinishResult::BossAlreadyWaiting);
+    CHECK(!service.deliverHeldExtrasBoss());  // still no room
+    pokemon::PokemonState cleared = stateNow();
+    CHECK(pokemon::discardFrontPendingEvent(cleared));
+    CHECK(store.commit(cleared));
+    const size_t encountersBefore = countEncounters(cleared);
+    // The next credit checkpoint delivers it.
+    CHECK(service.creditMinutes(1, 40));
+    CHECK(!extras::hasHeldBoss(extrasStore.state()));
+    CHECK(countEncounters(stateNow()) >= encountersBefore + 1);
+    CHECK(extras::booksFinishedRibbons(extrasStore.state()) == 4);
+    std::printf("  boss: held with a full queue, delivered at the next checkpoint\n");
+    checkMainSave();
+  }
+
+  // --- A crash between the extras save (boss taken) and the main commit: no
+  // boss, and no second boss later.
+  {
+    clearQueue();
+    extras::ExtrasState held = extrasStore.state();
+    CHECK(extras::holdBoss(held, 149));
+    CHECK(extrasStore.commit(held));
+    extras::ExtrasState taken = extrasStore.state();
+    CHECK(extras::takeHeldBoss(taken) == 149);
+    CHECK(extrasStore.commit(taken));  // step 1 done, then the power goes
+    extrasStore.load();                // reboot
+    const auto dragonites = [&] {
+      size_t count = 0;
+      const pokemon::PokemonState state = stateNow();
+      for (size_t index = 0; index < pokemon::pendingEventCount(state); ++index) {
+        count += state.pendingEvents[index].speciesId == 149 ? 1 : 0;
+      }
+      return count;
+    };
+    const size_t before = dragonites();
+    CHECK(!service.deliverHeldExtrasBoss());
+    CHECK(service.creditMinutes(1, 40));
+    CHECK(dragonites() == before);
+    std::printf("  boss: a crash between taking it and the main commit lost it, no second boss\n");
+    CHECK(!extras::hasHeldBoss(extrasStore.state()));
+    checkMainSave();
+  }
+
+  // --- Kindle credit on.
+  CHECK(extrasStore.setFeatureEnabled(Feature::KindleCredit, true));
+  CHECK(extrasStore.setFeatureEnabled(Feature::BookBoss, false));
+  clearQueue();
+  extras::KindleSync sync{};
+  sync.documentHash = BOOK_A;
+  sync.bookPages = 1000;
+  sync.pace.bookSecondsPerPage = 60;  // a minute a page
+  {
+    // 42 pages at a minute a page.
+    sync.localPermille = 100;
+    sync.remotePermille = 142;
+    const uint32_t lifetimeBefore = stateNow().lifetimeMinutes;
+    CHECK(service.creditRemoteReading(sync) == 42);
+    CHECK(stateNow().lifetimeMinutes == lifetimeBefore + 42U);
+    CHECK(extras::kindleHighWaterPermille(extrasStore.state(), BOOK_A) == 142);
+    // The same sync again: nothing, nothing written.
+    const auto filesMid = snapshotUpstreamFiles();
+    const std::vector<uint8_t> extrasMid = extrasFileBytes();
+    CHECK(service.creditRemoteReading(sync) == 0);
+    CHECK(snapshotUpstreamFiles() == filesMid);
+    CHECK(extrasFileBytes() == extrasMid);
+    std::printf("  kindle: a 42-minute sync credited 42 minutes; the same sync again, nothing\n");
+    checkMainSave();
+  }
+  {
+    // The mis-sync guard: 858 pages, 600 minutes in 10 chunks, the rest dropped.
+    sync.localPermille = 142;
+    sync.remotePermille = 1000;
+    const uint32_t lifetimeBefore = stateNow().lifetimeMinutes;
+    const uint32_t xpBefore = leaderXp();
+    const uint16_t credited = service.creditRemoteReading(sync);
+    CHECK(credited == extras::KINDLE_GUARD_MINUTES);
+    const uint32_t lifetimeGained = stateNow().lifetimeMinutes - lifetimeBefore;
+    CHECK(lifetimeGained <= extras::KINDLE_GUARD_MINUTES);
+    CHECK(lifetimeGained % extras::KINDLE_CHUNK_MINUTES == 0);  // whole chunks, then XP only if the queue filled
+    CHECK(extras::kindleHighWaterPermille(extrasStore.state(), BOOK_A) == 1000);
+    std::printf("  kindle: guarded sync, %u minutes credited (%lu through the reading path), lead +%lu XP\n",
+                static_cast<unsigned>(credited), static_cast<unsigned long>(lifetimeGained),
+                static_cast<unsigned long>(leaderXp() - xpBefore));
+    checkMainSave();
+  }
+  {
+    // A full queue: XP only for the lead.
+    fillQueue();
+    sync.documentHash = BOOK_B;
+    sync.localPermille = 0;
+    sync.remotePermille = 20;
+    const pokemon::PokemonState before = stateNow();
+    const uint32_t xpBefore = leaderXp();
+    CHECK(service.creditRemoteReading(sync) == 20);
+    const pokemon::PokemonState after = stateNow();
+    CHECK(after.lifetimeMinutes == before.lifetimeMinutes);
+    CHECK(pokemon::pendingEventCount(after) == pokemon::pendingEventCount(before));
+    if (pokemon::levelForXp(xpBefore) < 100) CHECK(leaderXp() > xpBefore);
+    checkMainSave();
+    clearQueue();
+  }
+  {
+    // Local reading keeps the mark current: only pages past it are credited.
+    service.setExtrasOpenBook(BOOK_C, 500);
+    CHECK(service.creditMinutes(1, 50));
+    CHECK(extras::kindleHighWaterPermille(extrasStore.state(), BOOK_C) == 500);
+    service.setExtrasOpenBook(0, 0);
+    sync.documentHash = BOOK_C;
+    sync.localPermille = 0;
+    sync.remotePermille = 520;
+    CHECK(service.creditRemoteReading(sync) == 20);
+    // A jump back and forward again earns nothing.
+    sync.localPermille = 520;
+    sync.remotePermille = 300;
+    CHECK(service.creditRemoteReading(sync) == 0);
+    sync.localPermille = 300;
+    sync.remotePermille = 520;
+    CHECK(service.creditRemoteReading(sync) == 0);
+  }
+  {
+    const uint16_t notice = service.takeExtrasKindleNotice();
+    CHECK(notice == 42 + extras::KINDLE_GUARD_MINUTES + 20 + 20);
+    CHECK(service.takeExtrasKindleNotice() == 0);
+    std::printf("  kindle: notice \"%u minutes credited\", shown once\n", static_cast<unsigned>(notice));
+  }
+  checkMainSave();
+  (void)fixture;
+}
+
 // Every extras operation there is so far, with the main save checked after each group.
 void runExtrasOperations(const bool fixture) {
   checkMainSave();
@@ -659,6 +918,7 @@ void runExtrasOperations(const bool fixture) {
 
   runM2Operations(fixture);
   runM3Operations(fixture);
+  runM4Operations(fixture);
 
   // Deleting the extras files changes nothing else.
   const auto withExtras = snapshotUpstreamFiles();

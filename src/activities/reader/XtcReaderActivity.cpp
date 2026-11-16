@@ -40,6 +40,9 @@
 #if defined(CROSSINK_ENABLE_POKEMON)
 #include "pokemon/PokemonService.h"
 #endif
+#if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
+#include "pokemon/PokemonExtrasHooks.h"
+#endif
 #include "util/BookCacheUtils.h"
 
 namespace {
@@ -566,6 +569,7 @@ void XtcReaderActivity::loop() {
     pokemonService.onSuccessfulPageTurn(millis());
 #if defined(CROSSINK_POKEMON_EXTRAS)
     if (nextTriggered && !prevTriggered) pokemonService.countExtrasEggPage();  // egg pages, RAM only
+    pokemon::extrasNoteOpenBook(xtc->getPath(), getCurrentBookProgressPercent() / 100.0f);  // Kindle mark, RAM only
 #endif
   }
 #endif
@@ -872,6 +876,9 @@ void XtcReaderActivity::setBookCompleted(const bool isCompleted) {
     }
     globalStats.save();
   }
+#if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
+  if (saved && isCompleted) pokemon::extrasOnBookCompleted(xtc->getPath(), xtc->getCachePath());  // book boss
+#endif
 }
 
 float XtcReaderActivity::getCurrentBookProgressPercent() const {

@@ -27,6 +27,9 @@
 #if defined(CROSSINK_ENABLE_POKEMON)
 #include "pokemon/PokemonService.h"
 #endif
+#if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
+#include "pokemon/PokemonExtrasHooks.h"
+#endif
 
 namespace {
 constexpr size_t CHUNK_SIZE = 8 * 1024;  // 8KB chunk for reading
@@ -370,6 +373,7 @@ void TxtReaderActivity::requestPageTurn(const bool previous, const bool next) {
     pokemonService.onSuccessfulPageTurn(millis());
 #if defined(CROSSINK_POKEMON_EXTRAS)
     if (next && !previous) pokemonService.countExtrasEggPage();  // egg pages, RAM only
+    pokemon::extrasNoteOpenBook(txt->getPath(), static_cast<float>(std::clamp(percent, 0, 100)) / 100.0f);  // RAM only
 #endif
   }
 #endif

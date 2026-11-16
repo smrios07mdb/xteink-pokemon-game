@@ -33,6 +33,9 @@
 #include "sync/SyncPending.h"
 #include "util/BookCacheUtils.h"
 #include "util/BookMoveUtils.h"
+#if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
+#include "pokemon/PokemonExtrasHooks.h"
+#endif
 
 namespace BookActions {
 namespace {
@@ -339,6 +342,9 @@ bool toggleBookCompleted(const std::string& fullPath, const std::string& display
     }
     globalStats.save();
   }
+#if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
+  if (completed) pokemon::extrasOnBookCompleted(fullPath, cachePath);  // book boss
+#endif
 
   // Changing completion status does not open a book. The reader adds it to
   // recents if it is opened again after being marked unfinished.

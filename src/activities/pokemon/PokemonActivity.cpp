@@ -869,11 +869,16 @@ void PokemonActivity::loadInitialScreen() {
     // Pokemon menu open (docs/extras/M3-HOOKS.md): a new day may have begun,
     // and a ready egg hatches. Both best effort: a failure shows the menu.
     service_.refreshDailyQuests();
-    if (pokemon::pendingEventFront(snapshot_.state) == nullptr && hatchEggIfReady()) return;
-#endif
+    // M4: a book boss held for a full queue goes in now if there is room;
+    // then the boss message and the Kindle minutes, once.
+    if (service_.deliverHeldExtrasBoss() && !refreshSnapshot()) return;
+    if (showExtrasNotices()) return;
+    continueInitialScreen();
+#else
     if (!showReceivedItems()) {
       setScreen(pokemon::pendingEventFront(snapshot_.state) == nullptr ? Screen::Menu : Screen::Event);
     }
+#endif
   }
 }
 
@@ -1279,6 +1284,32 @@ bool PokemonActivity::menuShowsQuests() const {
   return pokemon::devicePokemonExtrasStore().isFeatureEnabled(pokemon::extras::Feature::DailyQuests);
 }
 
+bool PokemonActivity::showExtrasNotices() {
+  const bool boss = service_.takeExtrasBossNotice();
+  const uint16_t minutes = service_.takeExtrasKindleNotice();
+  if (!boss && minutes == 0) return false;
+  char kindle[96]{};
+  if (minutes == 1) {
+    snprintf(kindle, sizeof(kindle), "%s", tr(STR_POKEMON_KINDLE_CREDITED_ONE));
+  } else if (minutes > 1) {
+    snprintf(kindle, sizeof(kindle), tr(STR_POKEMON_KINDLE_CREDITED), static_cast<unsigned>(minutes));
+  }
+  char text[sizeof(message_)];
+  snprintf(text, sizeof(text), "%s%s%s", boss ? tr(STR_POKEMON_BOSS_DRAWN) : "", boss && minutes != 0 ? "\n" : "",
+           kindle);
+  showMessage(text, Screen::Menu);
+  extrasNoticeContinues_ = true;
+  return true;
+}
+
+void PokemonActivity::continueInitialScreen() {
+  extrasNoticeContinues_ = false;
+  if (pokemon::pendingEventFront(snapshot_.state) == nullptr && hatchEggIfReady()) return;
+  if (!showReceivedItems()) {
+    setScreen(pokemon::pendingEventFront(snapshot_.state) == nullptr ? Screen::Menu : Screen::Event);
+  }
+}
+
 bool PokemonActivity::hatchEggIfReady() {
   uint32_t recordId = 0;
   uint16_t speciesId = 0;
@@ -1374,10 +1405,15 @@ void PokemonActivity::refreshExtrasLine(const Screen screen) {
                static_cast<unsigned>(pokemon::levelForXp(resident.totalXp)));
     }
   } else if (screen == Screen::Badges) {
+    auto& extrasStore = pokemon::devicePokemonExtrasStore();
+    // M4: "Books finished: N", from memory, once there is one.
+    ribbonLine_[0] = '\0';
+    if (const uint16_t ribbons = pokemon::extras::booksFinishedRibbons(extrasStore.state()); ribbons > 0) {
+      snprintf(ribbonLine_, sizeof(ribbonLine_), tr(STR_POKEMON_BOOKS_FINISHED_LINE), static_cast<unsigned>(ribbons));
+    }
     // Reads the firmware's reading stats, never writes them (SAVE-SAFETY R4).
     // Hidden without a valid clock or with Streaks off.
     streakLine_[0] = '\0';
-    auto& extrasStore = pokemon::devicePokemonExtrasStore();
     if (!extrasStore.isFeatureEnabled(pokemon::extras::Feature::Streaks)) return;
     const pokemon::extras::StreakInput streak = pokemon::readExtrasStreakInput();
     if (!streak.clockValid) return;
@@ -1456,6 +1492,9 @@ pokemon::PokemonRecord PokemonActivity::selectedRecord() const {
 
 void PokemonActivity::showMessage(const char* message, const Screen returnScreen) {
   showingReceived_ = false;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  extrasNoticeContinues_ = false;
+#endif
   snprintf(message_, sizeof(message_), "%s", message == nullptr ? "" : message);
   returnScreen_ = returnScreen;
   setScreen(Screen::Message);
@@ -3453,6 +3492,12 @@ void PokemonActivity::activate() {
       setScreen(Screen::Pc);
       return;
     case Screen::Message:
+#if defined(CROSSINK_POKEMON_EXTRAS)
+      if (extrasNoticeContinues_) {
+        continueInitialScreen();
+        return;
+      }
+#endif
       setScreen(returnScreen_);
       return;
   }
@@ -3558,6 +3603,12 @@ void PokemonActivity::goBack() {
       setScreen(Screen::Pokedex, static_cast<int>(pokedexSpecies_ - 1U));
       return;
     case Screen::Message:
+#if defined(CROSSINK_POKEMON_EXTRAS)
+      if (extrasNoticeContinues_) {
+        continueInitialScreen();
+        return;
+      }
+#endif
       setScreen(returnScreen_);
       return;
     case Screen::ResetFirst:
@@ -5114,6 +5165,7 @@ int PokemonActivity::trainerCardCells(pokemon::PokemonUiRect* cells, const int c
 #if defined(CROSSINK_POKEMON_EXTRAS)
   // Room for the Trainer Card's streak line (renderTrainerCard()).
   if (!hallOfFame && streakLine_[0] != '\0') gridTop += renderer.getLineHeight(UI_10_FONT_ID) + 4;
+  if (!hallOfFame && ribbonLine_[0] != '\0') gridTop += renderer.getLineHeight(UI_10_FONT_ID) + 4;
 #endif
   const int gridBottom = renderer.getScreenHeight() - metrics.buttonHintsHeight - viewableBottom - 8;
   constexpr int HALL_OF_FAME_TILE_HEIGHT = 150;  // room for a 90px sprite plus two lines of text, unlike a bare icon
@@ -5153,9 +5205,12 @@ void PokemonActivity::renderTrainerCard(const int contentTop) {
   const int pokedexY = contentTop + renderer.getLineHeight(UI_12_FONT_ID) + 8;
   centered(renderer, UI_10_FONT_ID, pokedexY, line);
 #if defined(CROSSINK_POKEMON_EXTRAS)
+  int extrasLineY = pokedexY + renderer.getLineHeight(UI_10_FONT_ID) + 4;
   if (streakLine_[0] != '\0') {
-    centered(renderer, UI_10_FONT_ID, pokedexY + renderer.getLineHeight(UI_10_FONT_ID) + 4, streakLine_);
+    centered(renderer, UI_10_FONT_ID, extrasLineY, streakLine_);
+    extrasLineY += renderer.getLineHeight(UI_10_FONT_ID) + 4;
   }
+  if (ribbonLine_[0] != '\0') centered(renderer, UI_10_FONT_ID, extrasLineY, ribbonLine_);
 #endif
 
   pokemon::PokemonUiRect cells[pokemon::GYM_COUNT]{};

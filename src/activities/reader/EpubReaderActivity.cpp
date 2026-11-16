@@ -88,6 +88,9 @@
 #if defined(CROSSINK_ENABLE_POKEMON)
 #include "pokemon/PokemonService.h"
 #endif
+#if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
+#include "pokemon/PokemonExtrasHooks.h"
+#endif
 #include "sync/BookSyncFile.h"
 #include "util/BookCacheUtils.h"
 #include "util/BookMoveUtils.h"
@@ -3052,14 +3055,33 @@ void EpubReaderActivity::applyKeptPosition(const KeptPosition::Offer& offer) {
   const int pageCount = std::max(position.totalPages, position.pageNumber + 1);
   const std::optional<uint32_t> visibleTextOffset =
       position.hasVisibleTextOffset ? std::optional<uint32_t>(position.visibleTextOffset) : std::nullopt;
+#if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
+  // Kindle credit: this reader's position before the sync moves it.
+  const float extrasLocalFraction =
+      section ? getCurrentBookProgressPercent() / 100.0f
+      : cachedChapterTotalPageCount > 0
+          ? epub->calculateProgress(cachedSpineIndex, static_cast<float>(cachedChapterPageNumber) /
+                                                          static_cast<float>(cachedChapterTotalPageCount))
+          : 0.0f;
+#endif
   section.reset();
-  if (EpubReaderUtils::saveProgress(*epub, position.spineIndex, position.pageNumber, pageCount, visibleTextOffset)) {
+  const bool keptSaved =
+      EpubReaderUtils::saveProgress(*epub, position.spineIndex, position.pageNumber, pageCount, visibleTextOffset);
+  if (keptSaved) {
     RecentBookProgress::saveCachedEpubPercent(*epub, position.spineIndex, position.pageNumber, pageCount);
   } else {
     LOG_ERR("ERS", "Cannot save kept position; the reader saves it on the next page turn");
   }
   KeptPosition::resolve(epub->getPath(), offer, false);
   LOG_INF("ERS", "Applied kept position: spine=%d page=%d/%d", position.spineIndex, position.pageNumber, pageCount);
+#if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
+  if (keptSaved) {
+    pokemon::extrasOnRemoteProgressApplied(
+        epub->getPath(), epub->getCachePath(), extrasLocalFraction,
+        epub->calculateProgress(position.spineIndex, static_cast<float>(position.pageNumber) / pageCount),
+        pokemon::extrasEpubBookPages(*epub, position.spineIndex, pageCount));
+  }
+#endif
 
   // Reopen at the new position exactly as onEnter() resumes saved progress,
   // which is what Sync Book's apply-and-reopen does.
@@ -5957,6 +5979,9 @@ void EpubReaderActivity::setBookCompleted(bool isCompleted) {
     }
     globalStats.save();
   }
+#if defined(CROSSINK_ENABLE_POKEMON) && defined(CROSSINK_POKEMON_EXTRAS)
+  if (isCompleted) pokemon::extrasOnBookCompleted(epub->getPath(), epub->getCachePath());  // book boss
+#endif
 }
 
 void EpubReaderActivity::showCompletedFeedback(bool isCompleted) {
@@ -6333,6 +6358,7 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn, const char* source) {
     pokemonService.onSuccessfulPageTurn(millis());
 #if defined(CROSSINK_POKEMON_EXTRAS)
     if (isForwardTurn) pokemonService.countExtrasEggPage();  // egg pages, RAM only
+    pokemon::extrasNoteOpenBook(epub->getPath(), getCurrentBookProgressPercent() / 100.0f);  // Kindle mark, RAM only
 #endif
   }
 #endif
