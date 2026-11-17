@@ -119,3 +119,32 @@ target_include_directories(PokemonExtrasBossTest PRIVATE
 target_compile_definitions(PokemonExtrasBossTest PRIVATE CROSSINK_POKEMON_EXTRAS=1)
 target_link_libraries(PokemonExtrasBossTest PRIVATE crosspoint_test_common)
 add_test(NAME PokemonExtrasBossTest COMMAND PokemonExtrasBossTest)
+
+# M5 rules: post-game rematches and Battle Tower (06-post-game.md), plus the
+# Day Care marker. Needs gym rosters and the road-trainer generator, so it uses
+# PokemonServiceTest's generated headers (gyms, moves, stats, learnsets).
+set(POKEMON_EXTRAS_POSTGAME_GENERATED_DIR "${CMAKE_BINARY_DIR}/pokemon_service/generated")
+add_executable(PokemonExtrasPostGameTest
+  PokemonExtrasPostGameTest.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonExtras.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonExtrasPostGame.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonTypes.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonSpecies.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonGame.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonItemData.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonMoveData.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonBaseStats.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonLearnsets.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonGymData.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonTypeChart.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonBattle.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonTrainers.cpp
+)
+add_dependencies(PokemonExtrasPostGameTest PokemonServiceTest)
+target_include_directories(PokemonExtrasPostGameTest PRIVATE
+  "${REPO_ROOT}/lib/Pokemon"
+  "${POKEMON_EXTRAS_POSTGAME_GENERATED_DIR}"
+)
+target_compile_definitions(PokemonExtrasPostGameTest PRIVATE CROSSINK_POKEMON_EXTRAS=1)
+target_link_libraries(PokemonExtrasPostGameTest PRIVATE crosspoint_test_common)
+add_test(NAME PokemonExtrasPostGameTest COMMAND PokemonExtrasPostGameTest)
