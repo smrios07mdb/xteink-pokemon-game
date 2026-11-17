@@ -32,6 +32,7 @@
 #include "PokemonExtrasBoss.h"
 #include "PokemonExtrasEggs.h"
 #include "PokemonExtrasKindle.h"
+#include "PokemonExtrasPostGame.h"
 #include "PokemonExtrasQuests.h"
 #include "PokemonExtrasRules.h"
 #include "PokemonStoreCodec.h"
@@ -876,6 +877,130 @@ void runM4Operations(const bool fixture) {
   (void)fixture;
 }
 
+// M5 (docs/extras/M5-HOOKS.md): Battle Passes, rematches, Battle Tower.
+// battleProgress, badges and the Hall of Fame are never written.
+void runM5Operations(const bool fixture) {
+  using pokemon::ServiceStatus;
+  using pokemon::extras::Feature;
+  namespace extras = pokemon::extras;
+
+  pokemon::PokemonExtrasStore& extrasStore = pokemon::devicePokemonExtrasStore();
+  extrasStore.load();
+  for (uint8_t index = 0; index < extras::FEATURE_COUNT; ++index) {
+    CHECK(extrasStore.setFeatureEnabled(static_cast<Feature>(index), false));
+  }
+
+  pokemon::PokemonStore store;
+  pokemon::PokemonBattleStore battleStore;
+  pokemon::PokemonIvEvStore ivEvStore;
+  pokemon::PokemonHallOfFameStore hallOfFameStore;
+  pokemon::PokemonService service(store, battleStore, ivEvStore, hallOfFameStore, {nullptr, zeroRandom});
+  pokemon::PokemonSnapshot snapshot{};
+  CHECK(service.loadSnapshot(snapshot) == ServiceStatus::Ok);
+  if (snapshot.partyCount == 0) return;
+  const auto stateNow = [&] {
+    pokemon::PokemonSnapshot current{};
+    CHECK(service.loadSnapshot(current) == ServiceStatus::Ok);
+    return current.state;
+  };
+  const auto hallOfFameFiles = [] {
+    std::map<std::string, std::vector<uint8_t>> files;
+    for (const char* name : {"pokemon-hof-a.bin", "pokemon-hof-b.bin"}) files[name] = readStub(devicePath(name));
+    return files;
+  };
+
+  // --- Toggle off: nothing, even with the Champion beaten.
+  const uint16_t progressBefore = stateNow().battleProgress;
+  {
+    const std::vector<uint8_t> extrasBefore = extrasFileBytes();
+    CHECK(service.beginExtrasRematch(1) == ServiceStatus::NotApplicable);
+    CHECK(service.beginExtrasTowerRun() == ServiceStatus::NotApplicable);
+    (void)service.creditMinutes(5, 40);
+    CHECK(extrasFileBytes() == extrasBefore);
+  }
+
+  // --- On, Champion not beaten (Sergio's save today): hidden, no extras write.
+  CHECK(extrasStore.setFeatureEnabled(Feature::PostGame, true));
+  if (!extras::postGameUnlocked(stateNow())) {
+    const std::vector<uint8_t> extrasBefore = extrasFileBytes();
+    (void)service.creditMinutes(5, 40);
+    (void)service.creditMinutes(60, 40);
+    CHECK(extrasFileBytes() == extrasBefore);
+    CHECK(extrasStore.state().battlePasses == 0 && extrasStore.state().passMinuteAnchor == 0);
+    CHECK(service.beginExtrasRematch(1) == ServiceStatus::NotApplicable);
+    CHECK(service.beginExtrasTowerRun() == ServiceStatus::NotApplicable);
+    std::printf("  post-game: locked (Champion not beaten), nothing written\n");
+  }
+
+  // --- Champion beaten, in this in-memory copy only.
+  {
+    pokemon::PokemonState state = stateNow();
+    state.battleProgress = pokemon::POKEMON_GYM_PROGRESS_MASK;
+    CHECK(store.commit(state));
+  }
+  const uint16_t unlocked = stateNow().battleProgress;
+  const auto hofBefore = hallOfFameFiles();
+
+  // Passes: the first credit only anchors; 60 more minutes earn one.
+  (void)service.creditMinutes(5, 40);
+  CHECK(extrasStore.state().passMinuteAnchor == stateNow().lifetimeMinutes);
+  CHECK(extrasStore.state().battlePasses == 0);
+  for (int i = 0; i < 12; ++i) (void)service.creditMinutes(5, 40);
+  CHECK(extrasStore.state().battlePasses == 1);
+  CHECK(stateNow().battleProgress == unlocked);
+
+  // Rematch: one pass, the gym is not marked again, no Hall of Fame write.
+  CHECK(service.beginExtrasRematch(3) == ServiceStatus::Ok);
+  CHECK(extrasStore.state().battlePasses == 0);
+  service.noteExtrasRematchWin(3);
+  CHECK(extras::rematchWinsFor(extrasStore.state(), 3) == 1);
+  CHECK(service.beginExtrasRematch(3) == ServiceStatus::NotApplicable);  // no pass left
+  CHECK(stateNow().battleProgress == unlocked);
+  CHECK(hallOfFameFiles() == hofBefore);
+  checkMainSave();
+
+  // Battle Tower: one pass; the 5th win leaves exactly one item.
+  {
+    extras::ExtrasState withPass = extrasStore.state();
+    withPass.battlePasses = 1;
+    CHECK(extrasStore.commit(withPass));
+  }
+  CHECK(service.beginExtrasTowerRun() == ServiceStatus::Ok);
+  CHECK(extrasStore.state().battlePasses == 0 && extras::towerRunActive(extrasStore.state()));
+  CHECK(service.beginExtrasTowerRun() == ServiceStatus::NotApplicable);  // one run at a time
+  uint32_t bagBefore = bagTotal(stateNow());
+  for (uint16_t expected = 1; expected <= 5; ++expected) {
+    extras::TowerWin win{};
+    uint8_t reward = 0;
+    CHECK(service.noteExtrasTowerWin(win, reward) == ServiceStatus::Ok);
+    CHECK(win.wins == expected);
+    CHECK(win.rewardDue == (expected == 5));
+    const uint32_t bagNow = bagTotal(stateNow());
+    if (expected < 5) {
+      CHECK(reward == 0 && bagNow == bagBefore);
+    } else {
+      CHECK(reward != 0 && bagNow == bagBefore + 1);
+    }
+    bagBefore = bagNow;
+  }
+  // A party member that has fought is back at full HP after a win.
+  for (int slot = 0; slot < snapshot.partyCount; ++slot) {
+    const pokemon::BattleRecordEntry* entry = battleStore.findEntry(snapshot.party[slot].recordId);
+    if (entry != nullptr) CHECK(entry->status == pokemon::Ailment::None);
+  }
+  uint16_t wins = 0;
+  CHECK(service.endExtrasTowerRun(wins) == ServiceStatus::Ok);
+  CHECK(wins == 5 && extras::towerBestStreak(extrasStore.state()) == 5);
+  CHECK(!extras::towerRunActive(extrasStore.state()));
+  CHECK(service.endExtrasTowerRun(wins) == ServiceStatus::NotApplicable);
+  CHECK(stateNow().battleProgress == unlocked);
+  CHECK(hallOfFameFiles() == hofBefore);
+  std::printf("  post-game: pass after 60 min, rematch, tower 5 wins -> 1 item, battleProgress 0x%04x -> 0x%04x\n",
+              static_cast<unsigned>(progressBefore), static_cast<unsigned>(stateNow().battleProgress));
+  checkMainSave();
+  (void)fixture;
+}
+
 // Every extras operation there is so far, with the main save checked after each group.
 void runExtrasOperations(const bool fixture) {
   checkMainSave();
@@ -919,6 +1044,7 @@ void runExtrasOperations(const bool fixture) {
   runM2Operations(fixture);
   runM3Operations(fixture);
   runM4Operations(fixture);
+  runM5Operations(fixture);
 
   // Deleting the extras files changes nothing else.
   const auto withExtras = snapshotUpstreamFiles();

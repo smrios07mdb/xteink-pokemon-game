@@ -72,8 +72,11 @@ void PokemonService::applyExtrasAfterCredit(const uint16_t minutes, const uint8_
   const bool markOn = extrasOpenBookHash_ != 0 && extrasStore.isFeatureEnabled(extras::Feature::KindleCredit);
   const bool bossWaiting =
       extrasStore.isFeatureEnabled(extras::Feature::BookBoss) && extras::hasHeldBoss(extrasStore.state());
+  // M5: Battle Passes accrue once the Champion is beaten (checked below).
+  const bool postGameOn = extrasStore.isFeatureEnabled(extras::Feature::PostGame);
   // Nothing to do: no stats read, no extras write, nothing in the main save.
-  if (!streaksOn && !eggsOn && !questsOn && !markOn && !bossWaiting && extrasStore.state().dayCareRecordId == 0) {
+  if (!streaksOn && !eggsOn && !questsOn && !markOn && !bossWaiting && !postGameOn &&
+      extrasStore.state().dayCareRecordId == 0) {
     return;
   }
 
@@ -189,6 +192,10 @@ void PokemonService::applyExtrasAfterCredit(const uint16_t minutes, const uint8_
   // upward; noteLocalProgress() does nothing with the toggle off), so a later
   // sync never credits them again. No write unless the mark moved.
   if (markOn) extras::noteLocalProgress(*copy, extrasOpenBookHash_, extrasOpenBookPermille_);
+
+  // M5: Battle Passes from lifetime minutes (read only). Nothing changes
+  // before the Champion is beaten, so no write until then.
+  if (postGameOn && store_.loadState(mainState)) extras::accrueBattlePasses(*copy, mainState);
 
   if (*copy != extrasStore.state() && !extrasStore.commit(*copy)) {
     LOG_ERR("PokemonService", "Failed to save extras after reading credit");
@@ -582,6 +589,128 @@ uint16_t PokemonService::takeExtrasKindleNotice() {
 bool PokemonService::readDayCareRecord(PokemonRecord& output) {
   const uint32_t recordId = devicePokemonExtrasStore().state().dayCareRecordId;
   return recordId != 0 && readRecord(recordId, output) == ServiceStatus::Ok;
+}
+
+// --- M5 -------------------------------------------------------------------
+
+ServiceStatus PokemonService::beginExtrasRematch(const uint8_t gymIndex) {
+  PokemonExtrasStore& extrasStore = devicePokemonExtrasStore();
+  if (extrasStore.readOnly()) return ServiceStatus::StorageError;
+  PokemonState mainState{};
+  if (!store_.loadState(mainState)) return ServiceStatus::StorageError;
+  if (!extras::canRematch(extrasStore.state(), mainState, gymIndex)) return ServiceStatus::NotApplicable;
+  const StatePtr copy = copyExtrasState(extrasStore);
+  if (!copy || !extras::spendBattlePass(*copy)) return ServiceStatus::StorageError;
+  if (!extrasStore.commit(*copy)) {
+    LOG_ERR("PokemonService", "Failed to spend a Battle Pass");
+    return ServiceStatus::StorageError;
+  }
+  return ServiceStatus::Ok;
+}
+
+void PokemonService::noteExtrasRematchWin(const uint8_t gymIndex) {
+  PokemonExtrasStore& extrasStore = devicePokemonExtrasStore();
+  if (extrasStore.readOnly()) return;
+  const StatePtr copy = copyExtrasState(extrasStore);
+  if (copy && extras::recordRematchWin(*copy, gymIndex) && !extrasStore.commit(*copy)) {
+    LOG_ERR("PokemonService", "Failed to save the rematch win");
+  }
+  applyExtrasQuestEvent(extras::recordQuestBattleWin, /*trainer=*/true);
+}
+
+ServiceStatus PokemonService::beginExtrasTowerRun() {
+  PokemonExtrasStore& extrasStore = devicePokemonExtrasStore();
+  if (extrasStore.readOnly()) return ServiceStatus::StorageError;
+  PokemonState mainState{};
+  if (!store_.loadState(mainState)) return ServiceStatus::StorageError;
+  const StatePtr copy = copyExtrasState(extrasStore);
+  if (!copy) return ServiceStatus::StorageError;
+  if (!extras::startTowerRun(*copy, mainState)) return ServiceStatus::NotApplicable;
+  if (!extrasStore.commit(*copy)) {
+    LOG_ERR("PokemonService", "Failed to start a Battle Tower run");
+    return ServiceStatus::StorageError;
+  }
+  return ServiceStatus::Ok;
+}
+
+ServiceStatus PokemonService::noteExtrasTowerWin(extras::TowerWin& win, uint8_t& rewardItemId) {
+  rewardItemId = 0;
+  PokemonExtrasStore& extrasStore = devicePokemonExtrasStore();
+  if (extrasStore.readOnly()) return ServiceStatus::StorageError;
+  const StatePtr copy = copyExtrasState(extrasStore);
+  if (!copy) return ServiceStatus::StorageError;
+  if (!extras::recordTowerWin(*copy, win)) return ServiceStatus::NotApplicable;
+  if (!extrasStore.commit(*copy)) {
+    LOG_ERR("PokemonService", "Failed to save the Battle Tower win");
+    return ServiceStatus::StorageError;
+  }
+  // Extras first, then the item (lose rather than duplicate, R6).
+  if (win.rewardDue && random_.below != nullptr) {
+    PokemonState state{};
+    if (loadReadyState(state) == ServiceStatus::Ok) {
+      OwnedEvolutionNeeds needs{};
+      if (!store_.loadOwnedEvolutionNeeds(needs)) needs = {};
+      if (!grantTrainerReward(state, win.rewardLevel, needs, random_, rewardItemId) || !store_.commit(state)) {
+        LOG_ERR("PokemonService", "Failed to grant the Battle Tower reward");
+        rewardItemId = 0;
+      }
+    }
+  }
+  applyExtrasQuestEvent(extras::recordQuestBattleWin, /*trainer=*/true);
+  healExtrasTowerParty();
+  return ServiceStatus::Ok;
+}
+
+ServiceStatus PokemonService::endExtrasTowerRun(uint16_t& wins) {
+  PokemonExtrasStore& extrasStore = devicePokemonExtrasStore();
+  wins = extrasStore.state().towerRunWins;
+  if (!extras::towerRunActive(extrasStore.state())) return ServiceStatus::NotApplicable;
+  if (extrasStore.readOnly()) return ServiceStatus::StorageError;
+  const StatePtr copy = copyExtrasState(extrasStore);
+  if (!copy) return ServiceStatus::StorageError;
+  extras::endTowerRun(*copy);
+  if (!extrasStore.commit(*copy)) {
+    LOG_ERR("PokemonService", "Failed to end the Battle Tower run");
+    return ServiceStatus::StorageError;
+  }
+  return ServiceStatus::Ok;
+}
+
+void PokemonService::healExtrasTowerParty() {
+  PokemonState state{};
+  if (!store_.loadState(state)) return;
+  std::array<BattleRecordEntry, PARTY_SIZE> healedEntries{};
+  size_t healedCount = 0;
+  std::array<PokemonRecord, PARTY_SIZE> partyRecords{};
+  store_.readRecords(std::span<const uint32_t>(state.partyRecordIds.data(), PARTY_SIZE),
+                     std::span<PokemonRecord>(partyRecords.data(), PARTY_SIZE));
+  for (size_t slot = 0; slot < PARTY_SIZE; ++slot) {
+    const uint32_t recordId = state.partyRecordIds[slot];
+    if (recordId == 0) continue;
+    const BattleRecordEntry* existing = battleStore_.findEntry(recordId);
+    if (existing == nullptr) continue;  // never fought: synthesizes at full HP/PP
+    const PokemonRecord& record = partyRecords[slot];
+    if (record.recordId != recordId) continue;
+    const BaseStats* stats = baseStatsFor(record.speciesId);
+    if (stats == nullptr) continue;
+    const IvEvEntry ivEv = ensureIvEv(recordId);
+    constexpr size_t hpIndex = static_cast<size_t>(StatIndex::Hp);
+    BattleRecordEntry healed = *existing;
+    healed.currentHp = battleMaxHp(stats->hp, levelForXp(record.totalXp), ivEv.iv[hpIndex], ivEv.ev[hpIndex]);
+    for (size_t moveSlot = 0; moveSlot < BATTLE_MOVE_SLOTS; ++moveSlot) {
+      if (healed.moves[moveSlot] == 0) continue;
+      const MoveData* move = moveData(healed.moves[moveSlot]);
+      if (move != nullptr) healed.pp[moveSlot] = maxPpFor(move->pp, healed.ppUp[moveSlot]);
+    }
+    healed.status = Ailment::None;
+    healed.statusTurns = 0;
+    healed.toxicCounter = 0;
+    if (healed == *existing) continue;
+    healedEntries[healedCount++] = healed;
+  }
+  if (healedCount > 0) {
+    battleStore_.upsertEntries(std::span<const BattleRecordEntry>(healedEntries.data(), healedCount));
+  }
 }
 
 }  // namespace pokemon

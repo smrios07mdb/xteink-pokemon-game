@@ -980,6 +980,7 @@ bool PokemonActivity::isChoiceButtonScreen() const {
 #if defined(CROSSINK_POKEMON_EXTRAS)
     case Screen::Extras:
     case Screen::Quests:
+    case Screen::Tower:
 #endif
     case Screen::Actions:
     case Screen::Moveset:
@@ -1002,7 +1003,7 @@ bool PokemonActivity::isChoiceButtonScreen() const {
 int PokemonActivity::choiceColumns() const {
   if (screen_ == Screen::Settings || screen_ == Screen::Message) return 1;
 #if defined(CROSSINK_POKEMON_EXTRAS)
-  if (screen_ == Screen::Extras || screen_ == Screen::Quests) return 1;
+  if (screen_ == Screen::Extras || screen_ == Screen::Quests || screen_ == Screen::Tower) return 1;
 #endif
   if (screen_ == Screen::Event) {
     const pokemon::PendingEvent* pending = pokemon::pendingEventFront(snapshot_.state);
@@ -1145,6 +1146,8 @@ int PokemonActivity::logicalCount() const {
     case Screen::Quests:
       // The three quests, then Claim while a reward is ready.
       return static_cast<int>(pokemon::extras::DAILY_QUEST_SLOTS) + (questReadyMask_ != 0 ? 1 : 0);
+    case Screen::Tower:
+      return towerRowCount();
 #endif
       return SETTINGS_TOGGLE_COUNT + 3;
     case Screen::Party:
@@ -1215,6 +1218,10 @@ int PokemonActivity::logicalCount() const {
     case Screen::BattleSwitch:
       return static_cast<int>(usablePartySlotCount());
     case Screen::GymList:
+#if defined(CROSSINK_POKEMON_EXTRAS)
+      // M5: one more row, Battle Tower, once post-game is open.
+      if (postGameShown()) return pokemon::GYM_COUNT + 1;
+#endif
       return pokemon::GYM_COUNT;
     case Screen::Badges:      // display-only Trainer Card, no selectable rows
     case Screen::HallOfFame:  // display-only, no selectable rows
@@ -1282,6 +1289,207 @@ const char* PokemonActivity::actionLabel(const pokemon::CollectionAction action)
 #if defined(CROSSINK_POKEMON_EXTRAS)
 bool PokemonActivity::menuShowsQuests() const {
   return pokemon::devicePokemonExtrasStore().isFeatureEnabled(pokemon::extras::Feature::DailyQuests);
+}
+
+// --- M5: post-game (docs/extras/M5-HOOKS.md) ---------------------------------
+
+bool PokemonActivity::postGameShown() const {
+  return pokemon::extras::postGameAvailable(pokemon::devicePokemonExtrasStore().state(), snapshot_.state);
+}
+
+uint8_t PokemonActivity::partyTopLevel() const {
+  uint8_t top = 0;
+  for (int slot = 0; slot < snapshot_.partyCount; ++slot) {
+    top = std::max(top, pokemon::levelForXp(snapshot_.party[slot].totalXp));
+  }
+  return top;
+}
+
+void PokemonActivity::startRematch(const uint8_t gymIndex) {
+  if (firstUsablePartySlot() < 0) {
+    showMessage(tr(STR_POKEMON_NO_USABLE_POKEMON), Screen::GymList);
+    return;
+  }
+  if (pokemon::devicePokemonExtrasStore().state().battlePasses == 0) {
+    showMessage(tr(STR_POKEMON_NO_BATTLE_PASS), Screen::GymList);
+    return;
+  }
+  uint16_t starterSpecies = snapshot_.state.starterSpeciesId;
+  if (starterSpecies == 0) {
+    pokemon::PokemonRecord starterRecord{};
+    if (service_.readRecord(1, starterRecord) == pokemon::ServiceStatus::Ok) starterSpecies = starterRecord.speciesId;
+  }
+  if (!pokemon::extras::buildRematchTeam(gymIndex, partyTopLevel(), starterSpecies, rematchTeam_)) {
+    showMessage(tr(STR_POKEMON_NOT_APPLICABLE), Screen::GymList);
+    return;
+  }
+  // The pass is spent (and saved) before the battle starts.
+  const pokemon::ServiceStatus status = service_.beginExtrasRematch(gymIndex);
+  if (status == pokemon::ServiceStatus::NotApplicable) {
+    showMessage(tr(STR_POKEMON_NO_BATTLE_PASS), Screen::GymList);
+    return;
+  }
+  if (status != pokemon::ServiceStatus::Ok) {
+    showMessage(tr(STR_POKEMON_SAVE_ERROR), Screen::GymList);
+    return;
+  }
+  rematchGym_ = gymIndex;
+  if (!enterGymBattle(gymIndex)) {
+    rematchGym_ = 0;
+    showMessage(tr(STR_POKEMON_SAVE_ERROR), Screen::GymList);
+  }
+}
+
+// Rows: Battle Passes, best run, [this run], then the actions: Start (no
+// run), or Next battle and Leave (a run is on).
+int PokemonActivity::towerRowCount() const {
+  return pokemon::extras::towerRunActive(pokemon::devicePokemonExtrasStore().state()) ? 5 : 3;
+}
+
+void PokemonActivity::towerRowLabel(const int index, char* out, const size_t size) const {
+  const auto& state = pokemon::devicePokemonExtrasStore().state();
+  const bool active = pokemon::extras::towerRunActive(state);
+  out[0] = '\0';
+  if (index == 0) {
+    snprintf(out, size, tr(STR_POKEMON_TOWER_PASSES), static_cast<unsigned>(state.battlePasses));
+  } else if (index == 1) {
+    snprintf(out, size, tr(STR_POKEMON_TOWER_BEST), static_cast<unsigned>(pokemon::extras::towerBestStreak(state)));
+  } else if (!active) {
+    snprintf(out, size, "%s", tr(STR_POKEMON_TOWER_START));
+  } else if (index == 2) {
+    snprintf(out, size, tr(STR_POKEMON_TOWER_RUN), static_cast<unsigned>(state.towerRunWins),
+             static_cast<unsigned>(pokemon::extras::towerLevel(state.towerRunWins)));
+  } else if (index == 3) {
+    snprintf(out, size, "%s", tr(STR_POKEMON_TOWER_NEXT));
+  } else {
+    snprintf(out, size, "%s", tr(STR_POKEMON_TOWER_LEAVE));
+  }
+}
+
+void PokemonActivity::activateTowerRow() {
+  const auto& state = pokemon::devicePokemonExtrasStore().state();
+  const bool active = pokemon::extras::towerRunActive(state);
+  const int startRow = 2;
+  const int nextRow = 3;
+  const int leaveRow = 4;
+  if (!active && selected_ == startRow) {
+    if (firstUsablePartySlot() < 0) {
+      showMessage(tr(STR_POKEMON_NO_USABLE_POKEMON), Screen::Tower);
+      return;
+    }
+    const pokemon::ServiceStatus status = service_.beginExtrasTowerRun();
+    if (status == pokemon::ServiceStatus::NotApplicable) {
+      showMessage(tr(STR_POKEMON_NO_BATTLE_PASS), Screen::Tower);
+      return;
+    }
+    if (status != pokemon::ServiceStatus::Ok || !enterTowerBattle()) {
+      showMessage(tr(STR_POKEMON_SAVE_ERROR), Screen::Tower);
+    }
+    return;
+  }
+  if (active && selected_ == nextRow) {
+    if (firstUsablePartySlot() < 0) {
+      showMessage(tr(STR_POKEMON_NO_USABLE_POKEMON), Screen::Tower);
+    } else if (!enterTowerBattle()) {
+      showMessage(tr(STR_POKEMON_SAVE_ERROR), Screen::Tower);
+    }
+    return;
+  }
+  if (active && selected_ == leaveRow) {
+    uint16_t wins = 0;
+    if (service_.endExtrasTowerRun(wins) != pokemon::ServiceStatus::Ok) {
+      showMessage(tr(STR_POKEMON_SAVE_ERROR), Screen::Tower);
+      return;
+    }
+    char line[96];
+    snprintf(line, sizeof(line), tr(STR_POKEMON_TOWER_OVER), static_cast<unsigned>(wins),
+             static_cast<unsigned>(pokemon::extras::towerBestStreak(pokemon::devicePokemonExtrasStore().state())));
+    showMessage(line, Screen::Tower);
+  }
+  // The info rows do nothing.
+}
+
+bool PokemonActivity::enterTowerBattle() {
+  pokemon::extras::TowerOpponent opponent{};
+  if (!pokemon::extras::towerOpponent(pokemon::devicePokemonExtrasStore().state(), opponent)) return false;
+  const int slot = firstUsablePartySlot();
+  if (slot < 0 || !setupBattlePlayer(slot)) return false;
+  roadTeam_ = opponent.team;
+  roadTrainerClass_ = opponent.classId;
+  gymChallengeIndex_ = ROAD_TRAINER_INDEX;
+  rematchGym_ = 0;
+  towerBattle_ = true;
+  gymChallengeTeamProgress_ = 0;
+  for (size_t i = 0; i < pokemon::MAX_GYM_TEAM_SIZE; ++i) gymTeamOrder_[i] = static_cast<uint8_t>(i);
+  gymBench_ = {};
+  setupGymOpponent(0, roadTeam_.members[0], /*preserveSideEffects=*/false);
+  opponentHealChargesRemaining_ = 0;
+  forcedBattleSwitch_ = false;
+  battleRunAttempts_ = 0;
+  char sentOut[96];
+  snprintf(sentOut, sizeof(sentOut), tr(STR_POKEMON_SENT_OUT), challengeTrainerName(),
+           speciesName(battleOpponent_.speciesId));
+  char go[64];
+  snprintf(go, sizeof(go), tr(STR_POKEMON_GO), speciesName(battlePlayer_.speciesId));
+  snprintf(battleLog_, sizeof(battleLog_), "%s\n%s", sentOut, go);
+  setScreen(Screen::Battle);
+  return true;
+}
+
+void PokemonActivity::finishTowerBattle(const bool won, const bool playerAlsoFainted) {
+  const char* trainerName = trainerClassName(roadTrainerClass_);
+  const pokemon::TrainerTeam beaten = roadTeam_;
+  towerBattle_ = false;
+  gymChallengeIndex_ = 0;
+  gymChallengeTeamProgress_ = 0;
+  char line[192];
+  int length = 0;
+  if (won) {
+    // XP like a gym: battleVictoryXp for each of the trainer's Pokemon, to
+    // the one that finished the battle (road-trainer faints gave EVs only).
+    if (battlePartySlot_ >= 0 && battlePartySlot_ < snapshot_.partyCount) {
+      const pokemon::PokemonRecord& fighter = snapshot_.party[battlePartySlot_];
+      const uint8_t playerLevel = pokemon::levelForXp(fighter.totalXp);
+      uint32_t xp = 0;
+      for (size_t i = 0; i < beaten.count; ++i) xp += pokemon::battleVictoryXp(beaten.members[i].level, playerLevel);
+      if (xp > 0) service_.awardFixedXp(fighter.recordId, xp);
+    }
+    pokemon::extras::TowerWin win{};
+    uint8_t reward = 0;
+    if (service_.noteExtrasTowerWin(win, reward) != pokemon::ServiceStatus::Ok) {
+      showMessage(tr(STR_POKEMON_SAVE_ERROR), Screen::Tower);
+      return;
+    }
+    if (!refreshSnapshot()) return;
+    length = snprintf(line, sizeof(line), tr(STR_POKEMON_TRAINER_DEFEATED), trainerName);
+    if (length > 0 && static_cast<size_t>(length) < sizeof(line)) {
+      length += snprintf(line + length, sizeof(line) - length, "\n");
+      length += snprintf(line + length, sizeof(line) - length, tr(STR_POKEMON_TOWER_WIN), static_cast<unsigned>(win.wins));
+    }
+    if (reward != 0 && length > 0 && static_cast<size_t>(length) < sizeof(line)) {
+      length += snprintf(line + length, sizeof(line) - length, "\n");
+      length += snprintf(line + length, sizeof(line) - length, tr(STR_POKEMON_TRAINER_LEFT_ITEM), trainerName,
+                         itemName(static_cast<pokemon::EvolutionItem>(reward)));
+    }
+    if (length > 0 && static_cast<size_t>(length) < sizeof(line)) {
+      snprintf(line + length, sizeof(line) - length, "\n%s", tr(STR_POKEMON_TOWER_HEALED));
+    }
+  } else {
+    uint16_t wins = 0;
+    if (service_.endExtrasTowerRun(wins) != pokemon::ServiceStatus::Ok) {
+      showMessage(tr(STR_POKEMON_SAVE_ERROR), Screen::Tower);
+      return;
+    }
+    if (!refreshSnapshot()) return;
+    length = snprintf(line, sizeof(line), "%s", tr(STR_POKEMON_GYM_CHALLENGE_LOST));
+    if (length > 0 && static_cast<size_t>(length) < sizeof(line)) {
+      length += snprintf(line + length, sizeof(line) - length, "\n");
+      snprintf(line + length, sizeof(line) - length, tr(STR_POKEMON_TOWER_OVER), static_cast<unsigned>(wins),
+               static_cast<unsigned>(pokemon::extras::towerBestStreak(pokemon::devicePokemonExtrasStore().state())));
+    }
+  }
+  (void)playerAlsoFainted;  // the tower heals between battles; the loss line says enough
+  showMessage(line, Screen::Tower);
 }
 
 bool PokemonActivity::showExtrasNotices() {
@@ -1407,6 +1615,13 @@ void PokemonActivity::refreshExtrasLine(const Screen screen) {
   } else if (screen == Screen::Badges) {
     auto& extrasStore = pokemon::devicePokemonExtrasStore();
     // M4: "Books finished: N", from memory, once there is one.
+    // M5: Battle Passes and the best tower run, once post-game is open.
+    postGameLine_[0] = '\0';
+    if (postGameShown()) {
+      snprintf(postGameLine_, sizeof(postGameLine_), tr(STR_POKEMON_POST_GAME_LINE),
+               static_cast<unsigned>(extrasStore.state().battlePasses),
+               static_cast<unsigned>(pokemon::extras::towerBestStreak(extrasStore.state())));
+    }
     ribbonLine_[0] = '\0';
     if (const uint16_t ribbons = pokemon::extras::booksFinishedRibbons(extrasStore.state()); ribbons > 0) {
       snprintf(ribbonLine_, sizeof(ribbonLine_), tr(STR_POKEMON_BOOKS_FINISHED_LINE), static_cast<unsigned>(ribbons));
@@ -2044,6 +2259,10 @@ bool PokemonActivity::enterBattle(const pokemon::PendingEvent& pending) {
   if (slot < 0 || !setupBattlePlayer(slot)) return false;
   setupBattleOpponent(pending.speciesId, pending.level, {}, pending.gender, pending.isShiny);
   gymChallengeIndex_ = 0;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  rematchGym_ = 0;
+  towerBattle_ = false;
+#endif
   forcedBattleSwitch_ = false;
   battleRunAttempts_ = 0;
   snprintf(battleLog_, sizeof(battleLog_), tr(STR_POKEMON_GO), speciesName(battlePlayer_.speciesId));
@@ -2062,6 +2281,9 @@ void PokemonActivity::setupGymOpponent(const uint8_t teamIndex, const pokemon::G
                             : gymChallengeIndex_ <= 3                ? 1
                             : gymChallengeIndex_ <= 8                ? 2
                                                                      : 3;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  if (towerBattle_) battleOpponent_.aiSkill = 3;  // M5: Battle Tower trainers play like the Elite Four
+#endif
   if (teamIndex >= gymBench_.size() || !gymBench_[teamIndex].saved) return;
   const GymBenchState& bench = gymBench_[teamIndex];
   battleOpponent_.currentHp = std::min(bench.currentHp, battleOpponent_.maxHp);
@@ -2073,6 +2295,9 @@ void PokemonActivity::setupGymOpponent(const uint8_t teamIndex, const pokemon::G
 
 std::span<const pokemon::GymTeamMember> PokemonActivity::challengeTeam() const {
   if (gymChallengeIndex_ == ROAD_TRAINER_INDEX) return {roadTeam_.members.data(), roadTeam_.count};
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  if (rematchGym_ != 0 && rematchGym_ == gymChallengeIndex_) return {rematchTeam_.members.data(), rematchTeam_.count};
+#endif
   return pokemon::gymTeamFor(gymChallengeIndex_);
 }
 
@@ -2090,6 +2315,10 @@ bool PokemonActivity::enterTrainerBattle(const pokemon::PendingEvent& pending) {
   roadTeam_ = team;
   roadTrainerClass_ = static_cast<uint8_t>(pending.speciesId);
   gymChallengeIndex_ = ROAD_TRAINER_INDEX;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  rematchGym_ = 0;
+  towerBattle_ = false;
+#endif
   gymChallengeTeamProgress_ = 0;
   for (size_t i = 0; i < pokemon::MAX_GYM_TEAM_SIZE; ++i) gymTeamOrder_[i] = static_cast<uint8_t>(i);
   gymBench_ = {};
@@ -2109,6 +2338,12 @@ bool PokemonActivity::enterTrainerBattle(const pokemon::PendingEvent& pending) {
 }
 
 void PokemonActivity::finishTrainerBattle(const bool won, const bool playerAlsoFainted) {
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  if (towerBattle_) {
+    finishTowerBattle(won, playerAlsoFainted);
+    return;
+  }
+#endif
   const char* trainerName = trainerClassName(roadTrainerClass_);
   gymChallengeIndex_ = 0;
   gymChallengeTeamProgress_ = 0;
@@ -2140,7 +2375,14 @@ void PokemonActivity::finishTrainerBattle(const bool won, const bool playerAlsoF
 }
 
 bool PokemonActivity::enterGymBattle(const uint8_t gymIndex) {
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  towerBattle_ = false;
+  const std::span<const pokemon::GymTeamMember> team =
+      rematchGym_ == gymIndex ? std::span<const pokemon::GymTeamMember>(rematchTeam_.members.data(), rematchTeam_.count)
+                              : pokemon::gymTeamFor(gymIndex);
+#else
   const auto team = pokemon::gymTeamFor(gymIndex);
+#endif
   if (team.empty()) return false;
   const int slot = firstUsablePartySlot();
   if (slot < 0 || !setupBattlePlayer(slot)) return false;
@@ -2262,6 +2504,9 @@ void PokemonActivity::resolveBattleAsPass() {
     // clear, so this just drops the in-progress challenge silently.
     gymChallengeIndex_ = 0;
     gymChallengeTeamProgress_ = 0;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+    rematchGym_ = 0;  // the pass was spent when the rematch started
+#endif
     setScreen(Screen::GymList);
     return;
   }
@@ -2462,7 +2707,12 @@ void PokemonActivity::advanceGymOpponentOrFinish(const bool playerAlsoFainted) {
     // voluntarily switched (never the Champion - see gymTeamOrder_'s doc
     // comment), so this indirection is always safe even where it's a no-op.
     pokemon::GymTeamMember next = team[gymTeamOrder_[gymChallengeTeamProgress_]];
-    if (gymChallengeIndex_ == pokemon::CHAMPION_GYM_INDEX && gymChallengeTeamProgress_ == team.size() - 1) {
+    bool championSlotFromTeam = false;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+    championSlotFromTeam = rematchGym_ == gymChallengeIndex_;  // buildRematchTeam() already swapped and scaled it
+#endif
+    if (!championSlotFromTeam && gymChallengeIndex_ == pokemon::CHAMPION_GYM_INDEX &&
+        gymChallengeTeamProgress_ == team.size() - 1) {
       // The Champion's final slot sends out the evolution that counters
       // the player's own starter in the real games - see
       // championFinalSlotFor(). The starter's species is recorded once at
@@ -2513,6 +2763,23 @@ void PokemonActivity::finishGymChallenge(const bool won, const bool playerAlsoFa
   const uint8_t gymIndex = gymChallengeIndex_;
   gymChallengeIndex_ = 0;
   gymChallengeTeamProgress_ = 0;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  // M5: a rematch never marks the gym, a badge or the Hall of Fame.
+  if (rematchGym_ != 0 && rematchGym_ == gymIndex) {
+    rematchGym_ = 0;
+    if (won) service_.noteExtrasRematchWin(gymIndex);
+    if (!refreshSnapshot()) return;
+    if (!won) {
+      showMessage(tr(STR_POKEMON_GYM_CHALLENGE_LOST), Screen::GymList);
+      return;
+    }
+    const pokemon::GymData* gym = pokemon::gymData(gymIndex);
+    char line[96];
+    snprintf(line, sizeof(line), tr(STR_POKEMON_REMATCH_WON), gym == nullptr ? "?" : gym->leaderName);
+    showMessage(line, Screen::GymList);
+    return;
+  }
+#endif
   if (!won) {
     if (!refreshSnapshot()) return;
     showMessage(tr(STR_POKEMON_GYM_CHALLENGE_LOST), Screen::GymList);
@@ -2651,6 +2918,9 @@ void PokemonActivity::activate() {
       if (!showReceivedItems()) setScreen(Screen::Quests);
       return;
     }
+    case Screen::Tower:
+      activateTowerRow();
+      return;
     case Screen::Extras: {
       const auto feature = static_cast<pokemon::extras::Feature>(selected_);
       auto& extrasStore = pokemon::devicePokemonExtrasStore();
@@ -3427,6 +3697,20 @@ void PokemonActivity::activate() {
     }
     case Screen::GymList: {
       const auto gymIndex = static_cast<uint8_t>(selected_ + 1);
+#if defined(CROSSINK_POKEMON_EXTRAS)
+      // M5: the row after the Champion opens the Battle Tower; a beaten gym
+      // is a rematch once post-game is open.
+      if (postGameShown() && gymIndex > pokemon::GYM_COUNT) {
+        setScreen(Screen::Tower);
+        return;
+      }
+      if (postGameShown() &&
+          pokemon::gymProgressFor(snapshot_.state.battleProgress, gymIndex) == pokemon::GymProgress::Defeated) {
+        startRematch(gymIndex);
+        return;
+      }
+      rematchGym_ = 0;
+#endif
       if (pokemon::gymProgressFor(snapshot_.state.battleProgress, gymIndex) != pokemon::GymProgress::Available) {
         showMessage(tr(STR_POKEMON_NOT_APPLICABLE), Screen::GymList);
         return;
@@ -3618,6 +3902,9 @@ void PokemonActivity::goBack() {
 #if defined(CROSSINK_POKEMON_EXTRAS)
     case Screen::Extras:
       setScreen(Screen::Settings, SETTINGS_EXTRAS_ROW);
+      return;
+    case Screen::Tower:
+      setScreen(Screen::GymList, pokemon::GYM_COUNT);
       return;
 #endif
     case Screen::PcReleaseConfirm:
@@ -4042,6 +4329,12 @@ void PokemonActivity::buildRows() {
         row(local, label);
         break;
       }
+      case Screen::Tower: {
+        char label[64];
+        towerRowLabel(index, label, sizeof(label));
+        row(local, label);
+        break;
+      }
 #endif
       case Screen::Settings:
 #if defined(CROSSINK_POKEMON_EXTRAS)
@@ -4189,6 +4482,13 @@ void PokemonActivity::buildRows() {
         row(local, label);
         snprintf(values_[local].data(), values_[local].size(), "%s %u", tr(STR_POKEMON_LEVEL),
                  pokemon::levelForXp(record.totalXp));
+#if defined(CROSSINK_POKEMON_EXTRAS)
+        // Play-test backlog: show which boxed Pokemon is in Day Care.
+        if (pokemon::extras::isInDayCare(pokemon::devicePokemonExtrasStore().state(), record.recordId)) {
+          const size_t used = strlen(values_[local].data());
+          snprintf(values_[local].data() + used, values_[local].size() - used, "  -  %s", tr(STR_POKEMON_DAY_CARE_TAG));
+        }
+#endif
         rows_[local].subtitle = values_[local].data();
         break;
       }
@@ -4413,6 +4713,15 @@ void PokemonActivity::buildRows() {
       }
       case Screen::GymList: {
         const auto gymIndex = static_cast<uint8_t>(index + 1);
+#if defined(CROSSINK_POKEMON_EXTRAS)
+        if (gymIndex > pokemon::GYM_COUNT) {  // M5: the Battle Tower row
+          snprintf(values_[local].data(), values_[local].size(), tr(STR_POKEMON_TOWER_PASSES),
+                   static_cast<unsigned>(pokemon::devicePokemonExtrasStore().state().battlePasses));
+          row(local, tr(STR_POKEMON_BATTLE_TOWER));
+          rows_[local].subtitle = values_[local].data();
+          break;
+        }
+#endif
         const pokemon::GymData* gym = pokemon::gymData(gymIndex);
         // The trainer's name is the label on its own; "Elite Four"/"Champion"
         // goes in the subtitle slot (its own line under the name, spanning
@@ -4430,6 +4739,23 @@ void PokemonActivity::buildRows() {
         const pokemon::GymProgress progress = pokemon::gymProgressFor(snapshot_.state.battleProgress, gymIndex);
         if (progress == pokemon::GymProgress::Defeated) {
           rows_[local].value = tr(STR_POKEMON_GYM_DEFEATED);
+#if defined(CROSSINK_POKEMON_EXTRAS)
+          // M5: "Rematch" (and the wins so far) on the subtitle line, which
+          // spans the row, so long leader names are not cut.
+          if (postGameShown()) {
+            rows_[local].value = nullptr;
+            const uint8_t wins = pokemon::extras::rematchWinsFor(pokemon::devicePokemonExtrasStore().state(), gymIndex);
+            char rematch[40];
+            if (wins > 0) {
+              snprintf(rematch, sizeof(rematch), tr(STR_POKEMON_REMATCH_WINS), static_cast<unsigned>(wins));
+            } else {
+              snprintf(rematch, sizeof(rematch), "%s", tr(STR_POKEMON_REMATCH));
+            }
+            // Replaces "Elite Four"/"Champion": the list order already says it.
+            snprintf(values_[local].data(), values_[local].size(), "%s", rematch);
+            rows_[local].subtitle = values_[local].data();
+          }
+#endif
         } else if (progress == pokemon::GymProgress::Locked) {
           rows_[local].value = tr(STR_POKEMON_GYM_LOCKED);
         }
@@ -4658,7 +4984,15 @@ void PokemonActivity::renderFocused() {
     snprintf(nameLine, sizeof(nameLine), "%s%s", speciesName(record.speciesId), shiny ? " ★" : "");
     renderer.drawText(UI_12_FONT_ID, textX, y, nameLine, true, EpdFontFamily::BOLD);
     y += 25;
-    renderer.drawText(UI_10_FONT_ID, textX, y, record.nickname[0] == '\0' ? "" : record.nickname.data());
+#if defined(CROSSINK_POKEMON_EXTRAS)
+    if (pokemon::extras::isInDayCare(pokemon::devicePokemonExtrasStore().state(), record.recordId)) {
+      char dayCare[64];
+      snprintf(dayCare, sizeof(dayCare), "%s%s%s", record.nickname[0] == '\0' ? "" : record.nickname.data(),
+               record.nickname[0] == '\0' ? "" : "  -  ", tr(STR_POKEMON_IN_DAY_CARE));
+      renderer.drawText(UI_10_FONT_ID, textX, y, dayCare);
+    } else
+#endif
+      renderer.drawText(UI_10_FONT_ID, textX, y, record.nickname[0] == '\0' ? "" : record.nickname.data());
     y += 27;
     char line[96];
     snprintf(line, sizeof(line), "%s %03u    %s %u    %s", tr(STR_POKEMON_NUMBER_SHORT), record.speciesId,
@@ -5166,6 +5500,7 @@ int PokemonActivity::trainerCardCells(pokemon::PokemonUiRect* cells, const int c
   // Room for the Trainer Card's streak line (renderTrainerCard()).
   if (!hallOfFame && streakLine_[0] != '\0') gridTop += renderer.getLineHeight(UI_10_FONT_ID) + 4;
   if (!hallOfFame && ribbonLine_[0] != '\0') gridTop += renderer.getLineHeight(UI_10_FONT_ID) + 4;
+  if (!hallOfFame && postGameLine_[0] != '\0') gridTop += renderer.getLineHeight(UI_10_FONT_ID) + 4;
 #endif
   const int gridBottom = renderer.getScreenHeight() - metrics.buttonHintsHeight - viewableBottom - 8;
   constexpr int HALL_OF_FAME_TILE_HEIGHT = 150;  // room for a 90px sprite plus two lines of text, unlike a bare icon
@@ -5210,7 +5545,11 @@ void PokemonActivity::renderTrainerCard(const int contentTop) {
     centered(renderer, UI_10_FONT_ID, extrasLineY, streakLine_);
     extrasLineY += renderer.getLineHeight(UI_10_FONT_ID) + 4;
   }
-  if (ribbonLine_[0] != '\0') centered(renderer, UI_10_FONT_ID, extrasLineY, ribbonLine_);
+  if (ribbonLine_[0] != '\0') {
+    centered(renderer, UI_10_FONT_ID, extrasLineY, ribbonLine_);
+    extrasLineY += renderer.getLineHeight(UI_10_FONT_ID) + 4;
+  }
+  if (postGameLine_[0] != '\0') centered(renderer, UI_10_FONT_ID, extrasLineY, postGameLine_);
 #endif
 
   pokemon::PokemonUiRect cells[pokemon::GYM_COUNT]{};
@@ -5610,6 +5949,10 @@ void PokemonActivity::renderChoiceButtons() {
         break;
       case Screen::Quests:
         questRowLabel(index, combined, sizeof(combined));
+        label = combined;
+        break;
+      case Screen::Tower:
+        towerRowLabel(index, combined, sizeof(combined));
         label = combined;
         break;
 #endif
@@ -6026,6 +6369,7 @@ void PokemonActivity::renderRowArt() {
                rowY + pokemon::pokemonCenteredOffset(rowHeight_, itemSize), itemSize, itemSize});
     } else if (screen_ == Screen::GymList) {
       const auto gymIndex = static_cast<uint8_t>(start + local + 1);
+      if (gymIndex > pokemon::GYM_COUNT) continue;  // M5: the Battle Tower row has no art
       constexpr int trainerSize = 32;
       pokemon::drawPokemonTrainerArt(
           renderer, gymIndex,
@@ -6434,6 +6778,8 @@ void PokemonActivity::renderHeaderAndHints() {
     title = tr(STR_POKEMON_EXTRAS);
   else if (screen_ == Screen::Quests)
     title = tr(STR_POKEMON_QUESTS);
+  else if (screen_ == Screen::Tower)
+    title = tr(STR_POKEMON_BATTLE_TOWER);
 #endif
   else if (screen_ == Screen::PcReleaseConfirm)
     title = tr(STR_POKEMON_PC_BOX);

@@ -28,6 +28,7 @@ set(POKEMON_EXTRAS_COMPAT_SOURCES
   ${REPO_ROOT}/lib/Pokemon/PokemonExtrasQuests.cpp
   ${REPO_ROOT}/lib/Pokemon/PokemonExtrasKindle.cpp
   ${REPO_ROOT}/lib/Pokemon/PokemonExtrasBoss.cpp
+  ${REPO_ROOT}/lib/Pokemon/PokemonExtrasPostGame.cpp
   ${REPO_ROOT}/src/pokemon/PokemonStore.cpp
   ${REPO_ROOT}/src/pokemon/PokemonBattleStore.cpp
   ${REPO_ROOT}/src/pokemon/PokemonIvEvStore.cpp
