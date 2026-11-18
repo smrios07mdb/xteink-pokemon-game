@@ -52,7 +52,8 @@ same next trainer from `(towerRunSeed, towerRunWins)`.
 - **Battle Tower is the last row of the Gym Battle list** (after the Champion, subtitle "Battle
   Passes: N"), not a Menu button: the Menu is a fixed touch grid. Hidden until post-game is open.
 - **Beaten gyms say "Rematch"** (or "Rematch (won N)") on the subtitle line; on the value slot it
-  cut long names. No confirm prompt: a tap spends the pass, a forfeit loses it.
+  cut long names. A tap asks "Rematch <leader>? Uses 1 Battle Pass (you have N)" (Yes/No,
+  Sergio 2026-11-17); Yes spends the pass, No keeps it, a forfeit after Yes loses it.
 - **Tower screen** (one column): Battle Passes, Best run, [This run: N wins, next Lv L], then
   Start a run (1 pass) / Next battle / Leave the tower.
 - **Tower battles** use the road-trainer battle path with `towerBattle_` set; AI skill 3 (Elite

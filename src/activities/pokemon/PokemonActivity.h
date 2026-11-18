@@ -69,6 +69,7 @@ class PokemonActivity final : public Activity {
     Extras,  // Settings > Extras: one on/off row per extras feature
     Quests,  // Menu > Quests: the day's three quests and Claim
     Tower,   // M5: Gym Battle > Battle Tower (post-game)
+    RematchConfirm,  // M5: Yes/No before a rematch spends a Battle Pass
 #endif
     ResetFirst,
     ResetFinal,
@@ -302,6 +303,8 @@ class PokemonActivity final : public Activity {
   uint8_t partyTopLevel() const;
   // Gym list confirm on a beaten gym: spends a pass and starts the rematch.
   void startRematch(uint8_t gymIndex);
+  // Gym list tap on a beaten gym: checks a pass and a usable party, then asks.
+  void askRematch(uint8_t gymIndex);
   // Screen::Tower rows: info rows, then the actions.
   int towerRowCount() const;
   void towerRowLabel(int index, char* out, size_t size) const;
@@ -365,6 +368,7 @@ class PokemonActivity final : public Activity {
   // Tower battle runs on the road-trainer path (ROAD_TRAINER_INDEX) with
   // towerBattle_ set.
   uint8_t rematchGym_ = 0;
+  uint8_t confirmRematchGym_ = 0;  // the gym Screen::RematchConfirm asks about
   pokemon::extras::RematchTeam rematchTeam_{};
   bool towerBattle_ = false;
 #endif

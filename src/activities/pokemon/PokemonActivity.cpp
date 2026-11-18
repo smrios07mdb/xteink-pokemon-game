@@ -978,6 +978,7 @@ bool PokemonActivity::isChoiceButtonScreen() const {
     case Screen::Event:
     case Screen::Settings:
 #if defined(CROSSINK_POKEMON_EXTRAS)
+    case Screen::RematchConfirm:
     case Screen::Extras:
     case Screen::Quests:
     case Screen::Tower:
@@ -1132,6 +1133,9 @@ int PokemonActivity::logicalCount() const {
     case Screen::ResetFinal:
     case Screen::PcReleaseConfirm:
     case Screen::EvolveConfirm:
+#if defined(CROSSINK_POKEMON_EXTRAS)
+    case Screen::RematchConfirm:
+#endif
       return screen_ == Screen::Move ? snapshot_.partyCount : 2;
     case Screen::Menu:
 #if defined(CROSSINK_POKEMON_EXTRAS)
@@ -1240,6 +1244,9 @@ int PokemonActivity::listTop() const {
   if (screen_ == Screen::Starter || screen_ == Screen::ResetFirst || screen_ == Screen::ResetFinal ||
       screen_ == Screen::PcReleaseConfirm || screen_ == Screen::EvolveConfirm)
     top += 72;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  if (screen_ == Screen::RematchConfirm) top += 72;
+#endif
   if (screen_ == Screen::Gender) top += 180;
   if (screen_ == Screen::NicknameQuestion) top += 210;
   return top;
@@ -1303,6 +1310,23 @@ uint8_t PokemonActivity::partyTopLevel() const {
     top = std::max(top, pokemon::levelForXp(snapshot_.party[slot].totalXp));
   }
   return top;
+}
+
+void PokemonActivity::askRematch(const uint8_t gymIndex) {
+  if (firstUsablePartySlot() < 0) {
+    showMessage(tr(STR_POKEMON_NO_USABLE_POKEMON), Screen::GymList);
+    return;
+  }
+  const uint8_t passes = pokemon::devicePokemonExtrasStore().state().battlePasses;
+  if (passes == 0) {
+    showMessage(tr(STR_POKEMON_NO_BATTLE_PASS), Screen::GymList);
+    return;
+  }
+  const pokemon::GymData* gym = pokemon::gymData(gymIndex);
+  snprintf(message_, sizeof(message_), tr(STR_POKEMON_REMATCH_QUESTION), gym == nullptr ? "?" : gym->leaderName,
+           static_cast<unsigned>(passes));
+  confirmRematchGym_ = gymIndex;
+  setScreen(Screen::RematchConfirm);
 }
 
 void PokemonActivity::startRematch(const uint8_t gymIndex) {
@@ -2921,6 +2945,16 @@ void PokemonActivity::activate() {
     case Screen::Tower:
       activateTowerRow();
       return;
+    case Screen::RematchConfirm: {
+      const uint8_t gymIndex = confirmRematchGym_;
+      confirmRematchGym_ = 0;
+      if (selected_ != 0 || gymIndex == 0) {
+        setScreen(Screen::GymList, gymIndex > 0 ? gymIndex - 1 : 0);
+        return;
+      }
+      startRematch(gymIndex);
+      return;
+    }
     case Screen::Extras: {
       const auto feature = static_cast<pokemon::extras::Feature>(selected_);
       auto& extrasStore = pokemon::devicePokemonExtrasStore();
@@ -3706,7 +3740,7 @@ void PokemonActivity::activate() {
       }
       if (postGameShown() &&
           pokemon::gymProgressFor(snapshot_.state.battleProgress, gymIndex) == pokemon::GymProgress::Defeated) {
-        startRematch(gymIndex);
+        askRematch(gymIndex);
         return;
       }
       rematchGym_ = 0;
@@ -3905,6 +3939,9 @@ void PokemonActivity::goBack() {
       return;
     case Screen::Tower:
       setScreen(Screen::GymList, pokemon::GYM_COUNT);
+      return;
+    case Screen::RematchConfirm:
+      setScreen(Screen::GymList, confirmRematchGym_ > 0 ? confirmRematchGym_ - 1 : 0);
       return;
 #endif
     case Screen::PcReleaseConfirm:
@@ -4304,6 +4341,9 @@ void PokemonActivity::buildRows() {
       case Screen::ResetFinal:
       case Screen::PcReleaseConfirm:
       case Screen::EvolveConfirm:
+#if defined(CROSSINK_POKEMON_EXTRAS)
+      case Screen::RematchConfirm:
+#endif
         row(local, index == 0 ? tr(STR_YES) : tr(STR_NO));
         break;
       // Unreachable in practice: isListScreen() excludes Screen::Menu (it
@@ -4941,6 +4981,21 @@ void PokemonActivity::renderFocused() {
     centered(renderer, UI_12_FONT_ID, contentTop + 100, tr(STR_POKEMON_BAG_EMPTY), EpdFontFamily::BOLD);
     return;
   }
+#if defined(CROSSINK_POKEMON_EXTRAS)
+  if (screen_ == Screen::RematchConfirm) {
+    // Two lines: the question, then what it costs and what is left.
+    const char* newline = strchr(message_, '\n');
+    if (newline == nullptr) {
+      centered(renderer, UI_12_FONT_ID, contentTop + 18, message_, EpdFontFamily::BOLD);
+    } else {
+      char first[96];
+      snprintf(first, sizeof(first), "%.*s", static_cast<int>(newline - message_), message_);
+      centered(renderer, UI_12_FONT_ID, contentTop + 6, first, EpdFontFamily::BOLD);
+      centered(renderer, UI_10_FONT_ID, contentTop + 6 + renderer.getLineHeight(UI_12_FONT_ID) + 6, newline + 1);
+    }
+    return;
+  }
+#endif
   if (screen_ == Screen::NicknameQuestion || screen_ == Screen::ResetFirst || screen_ == Screen::ResetFinal ||
       screen_ == Screen::PcReleaseConfirm || screen_ == Screen::EvolveConfirm) {
     const char* prompt = screen_ == Screen::NicknameQuestion || screen_ == Screen::PcReleaseConfirm ||
@@ -5940,6 +5995,9 @@ void PokemonActivity::renderChoiceButtons() {
       case Screen::ResetFinal:
       case Screen::PcReleaseConfirm:
       case Screen::EvolveConfirm:
+#if defined(CROSSINK_POKEMON_EXTRAS)
+      case Screen::RematchConfirm:
+#endif
         label = index == 0 ? tr(STR_YES) : tr(STR_NO);
         break;
 #if defined(CROSSINK_POKEMON_EXTRAS)
@@ -6780,6 +6838,8 @@ void PokemonActivity::renderHeaderAndHints() {
     title = tr(STR_POKEMON_QUESTS);
   else if (screen_ == Screen::Tower)
     title = tr(STR_POKEMON_BATTLE_TOWER);
+  else if (screen_ == Screen::RematchConfirm)
+    title = tr(STR_POKEMON_GYM_BATTLE);
 #endif
   else if (screen_ == Screen::PcReleaseConfirm)
     title = tr(STR_POKEMON_PC_BOX);
