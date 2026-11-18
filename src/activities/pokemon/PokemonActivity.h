@@ -68,6 +68,8 @@ class PokemonActivity final : public Activity {
 #if defined(CROSSINK_POKEMON_EXTRAS)
     Extras,  // Settings > Extras: one on/off row per extras feature
     Quests,  // Menu > Quests: the day's three quests and Claim
+    Tower,   // M5: Gym Battle > Battle Tower (post-game)
+    RematchConfirm,  // M5: Yes/No before a rematch spends a Battle Pass
 #endif
     ResetFirst,
     ResetFinal,
@@ -296,6 +298,19 @@ class PokemonActivity final : public Activity {
   bool showExtrasNotices();
   // What menu open does after the notices (or right away without them).
   void continueInitialScreen();
+  // M5 (docs/extras/M5-HOOKS.md): post-game rematches and Battle Tower.
+  bool postGameShown() const;
+  uint8_t partyTopLevel() const;
+  // Gym list confirm on a beaten gym: spends a pass and starts the rematch.
+  void startRematch(uint8_t gymIndex);
+  // Gym list tap on a beaten gym: checks a pass and a usable party, then asks.
+  void askRematch(uint8_t gymIndex);
+  // Screen::Tower rows: info rows, then the actions.
+  int towerRowCount() const;
+  void towerRowLabel(int index, char* out, size_t size) const;
+  void activateTowerRow();
+  bool enterTowerBattle();
+  void finishTowerBattle(bool won, bool playerAlsoFainted);
 #endif
   bool showsPartyHealthRows() const;
   bool showsMachineCapabilityRows() const;
@@ -348,6 +363,14 @@ class PokemonActivity final : public Activity {
   bool extrasNoticeContinues_ = false;  // the open Message is showExtrasNotices()'s
   uint8_t eggPercent_ = 0;  // the Menu's egg bar, 0..100
   uint8_t questReadyMask_ = 0;  // questRewardsReadyMask() when the Menu or Quests screen opened
+  char postGameLine_[72]{};  // "Battle Passes: 2  ·  Tower best: 7"; empty = post-game locked or off
+  // M5: the gym being rematched (0 = none) and its scaled team; a Battle
+  // Tower battle runs on the road-trainer path (ROAD_TRAINER_INDEX) with
+  // towerBattle_ set.
+  uint8_t rematchGym_ = 0;
+  uint8_t confirmRematchGym_ = 0;  // the gym Screen::RematchConfirm asks about
+  pokemon::extras::RematchTeam rematchTeam_{};
+  bool towerBattle_ = false;
 #endif
   char message_[192]{};  // long enough for a 32-byte nickname inside a translated (up to ~2 bytes per letter) sentence
   pokemon::BattleCombatant battlePlayer_{};

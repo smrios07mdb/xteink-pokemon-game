@@ -1,5 +1,7 @@
 # M5 hooks: post-game rematches, Battle Tower, Day Care marker
 
+Status 2026-11-17: built as planned below, with these changes made while building (see "As built").
+
 Rules: `lib/Pokemon/PokemonExtrasPostGame.{h,cpp}`, tested by `PokemonExtrasPostGameTest`
 (rules PR `feat/extras-m5-rules`). This file is the plan for the hooks PR. Every line below sits
 behind `#if defined(CROSSINK_POKEMON_EXTRAS)`; flag off, the build is upstream's.
@@ -45,3 +47,24 @@ same next trainer from `(towerRunSeed, towerRunWins)`.
 - Toggle off: no rows, no passes, nothing written.
 - Screenshots: Gym list with Rematch, rematch win, Tower screen, 5th-win reward, Trainer Card,
   PC Box "DC" tag, detail "In Day Care".
+
+## As built (2026-11-17, `feat/extras-m5-hooks`)
+- **Battle Tower is the last row of the Gym Battle list** (after the Champion, subtitle "Battle
+  Passes: N"), not a Menu button: the Menu is a fixed touch grid. Hidden until post-game is open.
+- **Beaten gyms say "Rematch"** (or "Rematch (won N)") on the subtitle line; on the value slot it
+  cut long names. A tap asks "Rematch <leader>? Uses 1 Battle Pass (you have N)" (Yes/No,
+  Sergio 2026-11-17); Yes spends the pass, No keeps it, a forfeit after Yes loses it.
+- **Tower screen** (one column): Battle Passes, Best run, [This run: N wins, next Lv L], then
+  Start a run (1 pass) / Next battle / Leave the tower.
+- **Tower battles** use the road-trainer battle path with `towerBattle_` set; AI skill 3 (Elite
+  Four). Win XP: `battleVictoryXp(member level, player level)` summed over the trainer's team, to
+  the Pokémon that finished the battle (road-trainer faints give EVs only). The party is healed
+  (HP, PP, status) in the battle store **after each win**, not at the start of a run. Run or a loss
+  ends the run.
+- **Rematch team:** `buildRematchTeam()` with the party's highest level; the battle flow's own
+  Champion final-slot swap is skipped for a rematch (already swapped and scaled).
+- **Day Care marker:** PC Box subtitle `Lv. N  -  DC`; Summary shows "In Day Care" under the name.
+- **Trainer Card:** "Battle Passes: N  -  Tower best: M" once post-game is open.
+- Rematch and tower wins also count as a trainer win for the daily quests.
+
+Gate results: see PROGRESS.md, M5 row.

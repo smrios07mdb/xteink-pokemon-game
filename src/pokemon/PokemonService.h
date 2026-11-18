@@ -15,6 +15,7 @@
 #include <PokemonExtrasBoss.h>
 #include <PokemonExtrasEggs.h>
 #include <PokemonExtrasKindle.h>
+#include <PokemonExtrasPostGame.h>
 #include <PokemonExtrasQuests.h>
 #include <PokemonExtrasRules.h>
 #endif
@@ -448,6 +449,28 @@ class PokemonService {
   // onExtrasBookFinished() on BossHeld); the Kindle minutes live in extras.
   bool takeExtrasBossNotice();
   uint16_t takeExtrasKindleNotice();
+
+  // Extras M5 (docs/extras/M5-HOOKS.md), also in PokemonServiceExtras.cpp.
+  // battleProgress is only read: a rematch never marks a gym, a badge or the
+  // Hall of Fame. Passes accrue in applyExtrasAfterCredit().
+  //
+  // Gym list > a beaten gym: spends a Battle Pass and saves extras BEFORE the
+  // battle (a crash or a forfeit loses the pass, never gives a free fight).
+  // NotApplicable: post-game off/locked, gym not beaten, or no pass.
+  ServiceStatus beginExtrasRematch(uint8_t gymIndex);
+  // A rematch won: the per-gym counter (extras only) and the daily quest
+  // trainer win. XP came through the battle flow already. Best effort.
+  void noteExtrasRematchWin(uint8_t gymIndex);
+  // Battle Tower > Start run: spends a pass, new run seed, saves extras.
+  ServiceStatus beginExtrasTowerRun();
+  // A tower battle won: extras first (wins, best streak), then on every 5th
+  // win one trainer item into the bag (main commit), then the party is
+  // healed for the next battle. `rewardItemId` 0 = none. A crash between
+  // the two commits loses the item, never doubles it (R6).
+  ServiceStatus noteExtrasTowerWin(extras::TowerWin& win, uint8_t& rewardItemId);
+  // A tower loss or Leave: the run ends (best streak kept). `wins` is the
+  // run's win count before it ended.
+  ServiceStatus endExtrasTowerRun(uint16_t& wins);
 #endif
 
  private:
@@ -543,6 +566,9 @@ class PokemonService {
   uint32_t extrasOpenBookHash_ = 0;
   uint16_t extrasOpenBookPermille_ = 0;
   bool extrasBossNoticePending_ = false;
+  // M5: full HP/PP/status for every party member with a battle entry
+  // (Battle Tower, between battles). Battle store only, best effort.
+  void healExtrasTowerParty();
 #endif
 
   PokemonStore& store_;
