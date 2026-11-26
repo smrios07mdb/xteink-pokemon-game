@@ -28,6 +28,14 @@ constexpr uint8_t HOURLY_ITEM_MISSES_BEFORE_GUARANTEE = 9;
 // evolution or a move to learn always has room (a full queue drops them until
 // the next level-up).
 constexpr size_t PENDING_EVENT_PROMPT_RESERVE = 2;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+// Extras: an evolution stone/Link Cable the bag already holds is less likely
+// to drop again, so the hourly roll leans toward what is still missing. Its
+// catalog drop_weight is divided by (1 + held), never below 1: with
+// drop_weight 8, held 0 -> 8, 1 -> 4, 2-3 -> 2, 4+ -> 1. Nothing held = the
+// upstream weights exactly. Weighting only; no save format change.
+uint32_t extrasHeldEvolutionItemWeight(uint32_t dropWeight, uint16_t held);
+#endif
 // Road trainers met while reading (see PokemonTrainers.h): a chance every
 // TRAINER_CHECK_MINUTES of reading, half the wild encounter rate.
 constexpr uint16_t TRAINER_CHECK_MINUTES = 30;
