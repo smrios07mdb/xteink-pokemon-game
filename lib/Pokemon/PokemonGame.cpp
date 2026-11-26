@@ -394,7 +394,10 @@ uint32_t buildItemCandidates(const PokemonState& state, const OwnedEvolutionNeed
     const ItemData* item = itemData(static_cast<uint8_t>(itemId));
     if (item == nullptr || item->dropWeight == 0) continue;
     if (categoryMatches != nullptr && !categoryMatches(item->category)) continue;
-    const uint32_t weight = weightOverride != nullptr ? weightOverride(*item) : item->dropWeight;
+    uint32_t weight = weightOverride != nullptr ? weightOverride(*item) : item->dropWeight;
+#if defined(CROSSINK_POKEMON_EXTRAS)
+    if (itemId <= EVOLUTION_ITEM_COUNT) weight = extrasHeldEvolutionItemWeight(weight, state.itemCounts[itemId - 1U]);
+#endif
     if (weight == 0) continue;
     candidateItemIds[candidateCount] = static_cast<uint8_t>(itemId);
     candidateWeights[candidateCount] = weight;
@@ -619,6 +622,14 @@ bool processHourlyItem(PokemonState& state, const RandomSource& random, const Ow
 }
 
 }  // namespace
+
+#if defined(CROSSINK_POKEMON_EXTRAS)
+uint32_t extrasHeldEvolutionItemWeight(const uint32_t dropWeight, const uint16_t held) {
+  if (dropWeight == 0) return 0;
+  const uint32_t weight = dropWeight / (static_cast<uint32_t>(held) + 1U);
+  return weight == 0 ? 1U : weight;
+}
+#endif
 
 void syncDashboardNotice(PokemonState& state) { refreshDashboardNotice(state); }
 

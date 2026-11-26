@@ -7,6 +7,7 @@
 #include <set>
 
 #include "PokemonExtrasRules.h"
+#include "PokemonGame.h"
 
 namespace {
 
@@ -380,6 +381,81 @@ void slotClearedOnWithdrawReleaseStaleAndReset() {
   CHECK(isFeatureEnabled(state, Feature::DayCare));
 }
 
+// Stone weighting: a held stone/Link Cable is less likely to drop again.
+void heldEvolutionItemWeightShrinksWithCount() {
+  CHECK(extrasHeldEvolutionItemWeight(8, 0) == 8);
+  CHECK(extrasHeldEvolutionItemWeight(8, 1) == 4);
+  CHECK(extrasHeldEvolutionItemWeight(8, 2) == 2);
+  CHECK(extrasHeldEvolutionItemWeight(8, 3) == 2);
+  CHECK(extrasHeldEvolutionItemWeight(8, 4) == 1);
+  CHECK(extrasHeldEvolutionItemWeight(8, UINT16_MAX - 1) == 1);
+  CHECK(extrasHeldEvolutionItemWeight(0, 0) == 0);
+}
+
+struct StoneRollRecorder {
+  std::array<uint32_t, 8> uppers{};
+  size_t calls = 0;
+  uint32_t answerForPick = 0;
+};
+
+// Draw 0: the hourly stone roll hits. Draw 1: which stone. Every other track misses.
+uint32_t recordStoneRoll(void* context, const uint32_t upper) {
+  auto* recorder = static_cast<StoneRollRecorder*>(context);
+  const size_t call = recorder->calls++;
+  if (call < recorder->uppers.size()) recorder->uppers[call] = upper;
+  if (call == 0) return 0;
+  if (call == 1) return recorder->answerForPick;
+  return upper == 0 ? 0 : upper - 1;
+}
+
+PokemonRecord stoneTestLeader() {
+  PokemonRecord leader{};
+  leader.recordId = 7;
+  leader.totalXp = 52;
+  leader.speciesId = 25;
+  leader.caughtLevel = 5;
+  leader.gender = Gender::Female;
+  leader.origin = Origin::Starter;
+  return leader;
+}
+
+// Sergio's case: owns Fire, Water, Leaf and Link Cable evolvers, holds 5 Fire,
+// 2 Water, 1 Leaf, 0 Link Cable -> weights 1 + 2 + 4 + 8 = 15, Link Cable 8/15.
+void hourlyRollFavoursTheStoneNotYetHeld() {
+  for (const uint32_t pick : {14U, 7U, 0U}) {
+    PokemonRecord leader = stoneTestLeader();
+    PokemonState state{};
+    state.partyRecordIds[0] = leader.recordId;
+    state.readingMinuteRemainder = 59;
+    state.itemCounts[1] = 5;  // Fire Stone
+    state.itemCounts[3] = 2;  // Water Stone
+    state.itemCounts[4] = 1;  // Leaf Stone
+    const OwnedEvolutionNeeds needs{static_cast<uint8_t>((1U << 1U) | (1U << 3U) | (1U << 4U) | (1U << 5U))};
+    StoneRollRecorder recorder{};
+    recorder.answerForPick = pick;
+    const CreditResult result =
+        applyCreditedMinutes(state, leader, 1, 25, needs, RandomSource{&recorder, recordStoneRoll});
+    CHECK(result.generatedEvent == PendingEventKind::Item);
+    CHECK(recorder.uppers[1] == 15);
+    if (pick == 0U) {
+      CHECK(state.itemCounts[1] == 6);  // roll 0 -> Fire Stone (weight 1)
+    } else {
+      CHECK(state.itemCounts[5] == 1);  // rolls 7..14 -> Link Cable (weight 8)
+    }
+  }
+}
+
+// Nothing held = upstream weights (8 each).
+void emptyBagKeepsUpstreamStoneWeights() {
+  PokemonRecord leader = stoneTestLeader();
+  PokemonState state{};
+  state.partyRecordIds[0] = leader.recordId;
+  state.readingMinuteRemainder = 59;
+  const OwnedEvolutionNeeds needs{static_cast<uint8_t>((1U << 1U) | (1U << 5U))};
+  StoneRollRecorder recorder{};
+  applyCreditedMinutes(state, leader, 1, 25, needs, RandomSource{&recorder, recordStoneRoll});
+  CHECK(recorder.uppers[1] == 16);
+}
 }  // namespace
 
 int main() {
@@ -402,6 +478,9 @@ int main() {
   neverPassesTheLeadsLevel();
   emptySlotOrFeatureOffEarnsNothing();
   slotClearedOnWithdrawReleaseStaleAndReset();
+  heldEvolutionItemWeightShrinksWithCount();
+  hourlyRollFavoursTheStoneNotYetHeld();
+  emptyBagKeepsUpstreamStoneWeights();
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);
     return 1;
